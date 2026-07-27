@@ -1,0 +1,23 @@
+{
+  "name": "ch-media-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Market Intelligence media worker — owns yt-dlp + ffmpeg + whisper.cpp behind an internal HTTP API so CHBackend (load-balanced) ships no media binaries.",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
