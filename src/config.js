@@ -35,4 +35,19 @@ module.exports = {
   ASR_CONCURRENCY: num(process.env.ASR_CONCURRENCY, 1),
   ASR_TIMEOUT_MS: num(process.env.ASR_TIMEOUT_MS, 1_800_000), // 30 min; no length cap on audio
   ASR_LANG: process.env.ASR_LANG || 'auto',
+
+  // Direct audio upload (POST /audio/transcribe)
+  UPLOAD_MAX_BYTES: num(process.env.UPLOAD_MAX_BYTES, 50 * 1024 * 1024),
+  UPLOAD_ALLOWED_EXTENSIONS: (process.env.UPLOAD_ALLOWED_EXTENSIONS || '.mp3,.wav,.m4a,.ogg,.webm,.flac')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+  UPLOAD_ALLOWED_MIMETYPES: (
+    process.env.UPLOAD_ALLOWED_MIMETYPES ||
+    'audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/wave,audio/vnd.wave,audio/mp4,audio/x-m4a,audio/ogg,application/ogg,audio/webm,audio/flac,audio/x-flac'
+  )
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+  UPLOAD_FFMPEG_TIMEOUT_MS: num(process.env.UPLOAD_FFMPEG_TIMEOUT_MS, 300_000), // 5 min; ASR_TIMEOUT_MS covers transcription
 };

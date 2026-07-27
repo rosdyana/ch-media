@@ -22,6 +22,14 @@ All requests require `Authorization: Bearer $MEDIA_SERVICE_TOKEN` (unless the to
   - Prefers yt-dlp captions; if none exist **and** `ASR_ENABLED=true`, downloads the audio
     (16 kHz mono WAV via ffmpeg) and transcribes with whisper.cpp.
   - Returns **422** when there's no usable transcript (caller should treat the source as failed).
+- `POST /audio/transcribe` — multipart upload, file field `audio` → `{ text, language }`
+  - General-purpose transcription for a directly-uploaded audio file (no YouTube involved).
+  - Max size `UPLOAD_MAX_BYTES` (default 50MB) → **413** if exceeded.
+  - Allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`) → **415** if not allowed.
+  - Converts to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — no captions fallback, so ASR must be configured (`ASR_ENABLED=true` + `WHISPER_MODEL_PATH`) or this returns **503**.
+  - Empty/silent audio is a normal **200** with `text: ""` (there's no "source" concept to fail here).
+
+A ready-to-import Postman collection + local environment live in [`postman/`](postman/).
 
 ## Requirements (host / image)
 

@@ -1,0 +1,296 @@
+{
+  "info": {
+    "_postman_id": "8f2c9e2a-6b7a-4e3a-9d5a-3c1f0a2b7e10",
+    "name": "CH Media Service",
+    "description": "Internal HTTP API around yt-dlp + ffmpeg + whisper.cpp — keeps media binaries and heavy transcription off the load-balanced CHBackend.\n\nAll routes except `/health` require `Authorization: Bearer {{token}}` (auth is skipped only if `MEDIA_SERVICE_TOKEN` is unset on the server — dev only).\n\nSet the collection variables `base_url` and `token` (or use the accompanying environment) before running requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{token}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:4020", "type": "string" },
+    { "key": "token", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        },
+        "description": "Unauthenticated liveness probe. Returns service status and whether the Whisper ASR fallback is enabled."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"status\": \"ok\",\n  \"asrEnabled\": true,\n  \"timestamp\": \"2026-07-27T03:16:07.123Z\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "YouTube Search",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"keyword\": \"lofi hip hop\",\n  \"max\": 15\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/youtube/search",
+          "host": ["{{base_url}}"],
+          "path": ["youtube", "search"]
+        },
+        "description": "Keyword search via yt-dlp `ytsearch` (no YouTube API key needed).\n\n**Body**\n- `keyword` (string, required)\n- `max` (number, optional, default 15, clamped 1–50)\n\n**Errors**\n- `400` — `keyword` missing/not a string\n- `401` — missing/invalid bearer token\n- `500` — yt-dlp not found or failed"
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keyword\": \"lofi hip hop\",\n  \"max\": 15\n}"
+            },
+            "url": { "raw": "{{base_url}}/youtube/search", "host": ["{{base_url}}"], "path": ["youtube", "search"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"data\": [\n    {\n      \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n      \"title\": \"lofi hip hop radio - beats to relax/study to\"\n    },\n    {\n      \"url\": \"https://www.youtube.com/watch?v=5qap5aO4i9A\",\n      \"title\": \"lofi hip hop radio - beats to sleep/chill to\"\n    }\n  ]\n}"
+        },
+        {
+          "name": "400 Bad Request - missing keyword",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{base_url}}/youtube/search", "host": ["{{base_url}}"], "path": ["youtube", "search"] }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"keyword is required\"\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"keyword\": \"lofi hip hop\"\n}" },
+            "url": { "raw": "{{base_url}}/youtube/search", "host": ["{{base_url}}"], "path": ["youtube", "search"] }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Unauthorized\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "YouTube Transcribe",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/youtube/transcribe",
+          "host": ["{{base_url}}"],
+          "path": ["youtube", "transcribe"]
+        },
+        "description": "Fetches metadata + transcript for one video. Prefers yt-dlp captions (in the language order configured by `YTDLP_SUB_LANGS`); if none exist and `ASR_ENABLED=true` on the server, downloads the audio and transcribes it with whisper.cpp.\n\n**Body**\n- `url` (string, required) — a YouTube video URL\n\n**Response fields**\n- `source` — `\"captions\"` or `\"asr\"`\n- `text` — title + description + transcript, concatenated and truncated to `YTDLP_MAX_TRANSCRIPT_CHARS`\n- `meta` — video metadata (uploader, view/like counts, duration, upload date, etc.)\n\n**Errors**\n- `400` — `url` missing/not a string\n- `401` — missing/invalid bearer token\n- `422` — no usable transcript (no captions, and ASR disabled or produced no text) — treat as a failed source\n- `500` — yt-dlp not found or failed\n- `502` — yt-dlp metadata output could not be parsed, or audio extraction produced no WAV\n\nNote: this endpoint can be slow — ASR fallback runs whisper.cpp over the full audio (server timeout defaults to 30 min, `ASR_TIMEOUT_MS`). Consider raising Postman's request timeout for this call."
+      },
+      "response": [
+        {
+          "name": "200 OK - captions",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\"\n}" },
+            "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n  \"title\": \"lofi hip hop radio - beats to relax/study to\",\n  \"text\": \"Title: lofi hip hop radio - beats to relax/study to\\n\\nDescription: 24/7 lofi hip hop radio...\\n\\nTranscript:\\n[no spoken words — instrumental]\",\n  \"language\": \"en\",\n  \"source\": \"captions\",\n  \"meta\": {\n    \"description\": \"24/7 lofi hip hop radio...\",\n    \"uploader\": \"Lofi Girl\",\n    \"channelId\": \"UCSJ4gkVC6NrvII8umztf0Ow\",\n    \"viewCount\": 123456789,\n    \"likeCount\": 654321,\n    \"duration\": 0,\n    \"uploadDate\": \"20200101\",\n    \"videoId\": \"jfKfPfyJRdk\",\n    \"captionLanguage\": \"en\",\n    \"hasTranscript\": true,\n    \"transcriptSource\": \"captions\"\n  }\n}"
+        },
+        {
+          "name": "422 Unprocessable - no transcript",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=EXAMPLE\"\n}" },
+            "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
+          },
+          "status": "Unprocessable Entity",
+          "code": 422,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"No usable transcript — no captions available (ASR disabled)\"\n}"
+        },
+        {
+          "name": "400 Bad Request - missing url",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"url is required\"\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\"\n}" },
+            "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Unauthorized\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Audio Upload Transcribe",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "audio",
+              "type": "file",
+              "src": []
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/audio/transcribe",
+          "host": ["{{base_url}}"],
+          "path": ["audio", "transcribe"]
+        },
+        "description": "General-purpose transcription for a directly-uploaded audio file (no YouTube involved). Converts the upload to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — there's no captions fallback, so ASR must be configured on the server.\n\n**Body** — `multipart/form-data`\n- `audio` (file, required) — max `UPLOAD_MAX_BYTES` (default 50MB); allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`)\n\n**Response**\n- `{ text, language }` — `text` may be `\"\"` for silent/instrumental audio; that's a normal 200, not an error\n\n**Errors**\n- `400` — no `audio` file field in the request\n- `401` — missing/invalid bearer token\n- `413` — file exceeds `UPLOAD_MAX_BYTES`\n- `415` — disallowed file extension, or extension/mimetype mismatch\n- `500` — ffmpeg/whisper not found or failed\n- `503` — ASR isn't configured (`ASR_ENABLED=false` or `WHISPER_MODEL_PATH` unset)\n\nNote: whisper.cpp transcription can be slow for longer files — consider raising Postman's request timeout for this call."
+      },
+      "response": [
+        {
+          "name": "200 OK",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"text\": \"Thanks for calling support, how can I help you today?\",\n  \"language\": \"en\"\n}"
+        },
+        {
+          "name": "400 Bad Request - missing audio field",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"audio file is required (multipart field \\\"audio\\\")\"\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Unauthorized\"\n}"
+        },
+        {
+          "name": "413 Payload Too Large",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "Payload Too Large",
+          "code": 413,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"File exceeds the 52428800-byte upload limit\"\n}"
+        },
+        {
+          "name": "415 Unsupported Media Type",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "Unsupported Media Type",
+          "code": 415,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Unsupported file extension \\\".txt\\\" — allowed: .mp3, .wav, .m4a, .ogg, .webm, .flac\"\n}"
+        },
+        {
+          "name": "503 Service Unavailable - ASR not configured",
+          "originalRequest": {
+            "method": "POST",
+            "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
+            "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
+          },
+          "status": "Service Unavailable",
+          "code": 503,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Audio transcription is disabled (ASR_ENABLED=false).\"\n}"
+        }
+      ]
+    }
+  ]
+}
