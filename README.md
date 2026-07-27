@@ -11,6 +11,81 @@ API instance (and running transcription on a web tier) is undesirable. This serv
 all of that: run it as its own image on a single instance (or a GPU box), on a private
 network, reachable only by `CHBackend`/`mi-worker`.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    CHBackend["CHBackend / mi-worker"]
+
+    subgraph svc ["CH Media Service"]
+        API["API<br/>src/server.js"]
+        Worker["Worker<br/>src/worker.js"]
+    end
+
+    Redis[("Redis / BullMQ<br/>job queue + status store")]
+    Bin["yt-dlp / ffmpeg / whisper.cpp"]
+
+    CHBackend -- "POST /youtube/search (sync)<br/>POST /youtube/transcribe (async)<br/>POST /audio/transcribe (async)<br/>GET /jobs/:id (poll)" --> API
+    API -- "enqueue / read job status+result" --> Redis
+    Worker -- "consume job / write result" --> Redis
+    Worker -- "spawn subprocess" --> Bin
+```
+
+The API and worker are separate processes (`ch-media-service.service` /
+`ch-media-worker.service`) so a heavy or crashing transcription job never blocks the HTTP
+tier that's accepting new requests — the same isolation principle CHBackend already
+applies to *this whole service* (see "Why" above), just one layer deeper. Redis is the
+only shared state: it's both the job broker and the result/status store BullMQ reads
+`GET /jobs/:id` from — there's no separate database.
+
+### Request flow
+
+`/youtube/search` stays synchronous — it's a fast yt-dlp metadata lookup, so the API
+handles it directly and returns the result in the same request:
+
+```mermaid
+sequenceDiagram
+    participant C as CHBackend
+    participant A as API
+
+    C->>A: POST /youtube/search
+    A->>A: yt-dlp ytsearch
+    A-->>C: 200 { data }
+```
+
+`/youtube/transcribe` and `/audio/transcribe` are async — yt-dlp/ffmpeg/whisper.cpp can
+take anywhere from seconds to ~30 minutes (ASR), far too long to hold an HTTP request open:
+
+```mermaid
+sequenceDiagram
+    participant C as CHBackend
+    participant A as API
+    participant R as Redis (BullMQ)
+    participant W as Worker
+
+    C->>A: POST /youtube/transcribe { url }
+    A->>R: enqueue job
+    A-->>C: 202 { jobId, status: "queued" }
+
+    R-->>W: job picked up
+    activate W
+    W->>W: yt-dlp / ffmpeg / whisper.cpp
+    W->>R: store result (or failure)
+    deactivate W
+
+    loop poll until done/failed
+        C->>A: GET /jobs/:id
+        A->>R: read job state
+        A-->>C: { status, queuedMs, processingMs }
+    end
+```
+
+`/audio/transcribe` follows the same shape, except the multipart upload (and its
+validation — file size/extension/ASR-configured checks) happens synchronously on the
+initial `POST`, before the job is enqueued; only the ffmpeg-convert + whisper-transcribe
+step happens in the worker. See [Endpoints](#endpoints-token-gated) below for the exact
+field shapes of each response.
+
 ## Endpoints (token-gated)
 
 All requests require `Authorization: Bearer $MEDIA_SERVICE_TOKEN` (unless the token is unset).
