@@ -103,10 +103,13 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
 - `POST /youtube/transcribe` `{ url }` → `202 { jobId, status: "queued" }`
   Job result: `{ url, title, text, language, source, meta }`
   - `source` = `"captions"` or `"asr"`.
-  - Prefers yt-dlp captions; if none exist **and** `ASR_ENABLED=true`, downloads the audio
-    (16 kHz mono WAV via ffmpeg) and transcribes with whisper.cpp.
-  - The job fails (`GET /jobs/:id` → `status: "failed"`, `error.statusCode: 422`) when
-    there's no usable transcript (caller should treat the source as failed).
+  - Prefers yt-dlp captions; whenever there's still no transcript **and** `ASR_ENABLED=true` —
+    no subtitles exist, or yt-dlp itself failed on the metadata/caption step (bot-detection,
+    geo-block, transient errors, etc.) — it falls back to downloading the audio (16 kHz mono
+    WAV via yt-dlp's ffmpeg postprocessor) and transcribing with whisper.cpp.
+  - The job fails (`GET /jobs/:id` → `status: "failed"`, `error.statusCode: 422`) only when
+    every attempted step failed to produce a transcript; the error message lists which of
+    metadata/captions/ASR were attempted and why each one failed.
 - `POST /audio/transcribe` — multipart upload, file field `audio` → `202 { jobId, status: "queued" }`
   Job result: `{ text, language }`
   - General-purpose transcription for a directly-uploaded audio file (no YouTube involved).
@@ -128,7 +131,7 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
     as documented above).
   - `error` is present when `status: "failed"`: `{ message, statusCode }`, where
     `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for
-    no usable transcript, `502` for a yt-dlp/metadata failure, `500` otherwise).
+    no usable transcript after exhausting captions + ASR, `500` otherwise).
   - Returns **404** if the job id doesn't exist (never existed, or evicted after
     `JOB_RETENTION_MS`).
 
@@ -142,6 +145,11 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
 - `ffmpeg` on `PATH` (or `FFMPEG_PATH`) — needed for audio extraction + resample
 - For ASR: `whisper.cpp` CLI (`WHISPER_CPP_PATH`) + a model file (`WHISPER_MODEL_PATH`),
   then set `ASR_ENABLED=true`
+- If yt-dlp starts failing every request with `Sign in to confirm you're not a bot`, YouTube is
+  bot-detecting this host's IP — the ASR fallback can't help since it downloads audio via
+  yt-dlp too, so the same block applies. Fix it at the source: set `YTDLP_COOKIES` (path to a
+  cookies.txt) or `YTDLP_COOKIES_FROM_BROWSER` (browser name yt-dlp can read cookies from on
+  this host) so yt-dlp authenticates like a signed-in browser.
 
 ## Run
 
