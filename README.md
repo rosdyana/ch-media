@@ -15,15 +15,16 @@ network, reachable only by `CHBackend`/`mi-worker`.
 
 All requests require `Authorization: Bearer $MEDIA_SERVICE_TOKEN` (unless the token is unset).
 
-Processing endpoints are **asynchronous**: they enqueue a job on a Redis-backed BullMQ
-queue and respond immediately with `202 { jobId, status: "queued" }`. The actual
-yt-dlp/ffmpeg/whisper.cpp work runs in a separate worker process (`src/worker.js`, run as
-`ch-media-worker.service`), not in the process that accepted the HTTP request — poll
-`GET /jobs/:id` until it reports `done` or `failed`.
+The two transcription endpoints are **asynchronous**: they enqueue a job on a
+Redis-backed BullMQ queue and respond immediately with `202 { jobId, status: "queued" }`.
+The actual yt-dlp/ffmpeg/whisper.cpp work runs in a separate worker process
+(`src/worker.js`, run as `ch-media-worker.service`), not in the process that accepted the
+HTTP request — poll `GET /jobs/:id` until it reports `done` or `failed`. `/youtube/search`
+stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
 
 - `GET  /health` → `{ status, asrEnabled }`
-- `POST /youtube/search` `{ keyword, max? }` → `202 { jobId, status: "queued" }`
-  Job result: `{ data: [{ url, title }] }` (yt-dlp `ytsearch`)
+- `POST /youtube/search` `{ keyword, max? }` → `{ data: [{ url, title }] }` (yt-dlp
+  `ytsearch`) — synchronous, not queued.
 - `POST /youtube/transcribe` `{ url }` → `202 { jobId, status: "queued" }`
   Job result: `{ url, title, text, language, source, meta }`
   - `source` = `"captions"` or `"asr"`.

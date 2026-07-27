@@ -8,6 +8,7 @@ const express = require('express');
 const cfg = require('./config');
 const { MediaError } = require('./ytdlp');
 const { runUpload } = require('./upload');
+const { searchYoutube } = require('./youtube');
 const { enqueueJob, getJob, JOB_NAMES } = require('./queue');
 
 const app = express();
@@ -38,8 +39,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', asrEnabled: cfg.ASR_ENABLED, timestamp: new Date().toISOString() });
 });
 
-// POST /youtube/search { keyword, max } — enqueues a job, returns 202 + jobId.
-// Poll GET /jobs/:id for the { data } result.
+// POST /youtube/search { keyword, max } — synchronous; it's a fast metadata
+// lookup, not worth the queue round-trip the other two endpoints need.
 app.post(
   '/youtube/search',
   auth,
@@ -48,8 +49,8 @@ app.post(
     if (!keyword || typeof keyword !== 'string') {
       throw new MediaError('keyword is required', { statusCode: 400 });
     }
-    const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_SEARCH, { keyword, max });
-    res.status(202).json({ jobId, status: 'queued' });
+    const data = await searchYoutube(keyword, max);
+    res.json({ data });
   }),
 );
 

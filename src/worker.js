@@ -10,15 +10,11 @@ const { Worker } = require('bullmq');
 const cfg = require('./config');
 const { getConnection, QUEUE_NAME, JOB_NAMES } = require('./queue');
 const { MediaError } = require('./ytdlp');
-const { searchYoutube, transcribeYoutube } = require('./youtube');
+const { transcribeYoutube } = require('./youtube');
 const { transcribeUploadedAudio } = require('./audio');
 
 async function processJob(job) {
   switch (job.name) {
-    case JOB_NAMES.YOUTUBE_SEARCH: {
-      const { keyword, max } = job.data;
-      return { data: await searchYoutube(keyword, max) };
-    }
     case JOB_NAMES.YOUTUBE_TRANSCRIBE: {
       const { url } = job.data;
       return transcribeYoutube(url);

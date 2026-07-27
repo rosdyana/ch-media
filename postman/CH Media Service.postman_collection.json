@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "8f2c9e2a-6b7a-4e3a-9d5a-3c1f0a2b7e10",
     "name": "CH Media Service",
-    "description": "Internal HTTP API around yt-dlp + ffmpeg + whisper.cpp — keeps media binaries and heavy transcription off the load-balanced CHBackend.\n\nAll routes except `/health` require `Authorization: Bearer {{token}}` (auth is skipped only if `MEDIA_SERVICE_TOKEN` is unset on the server — dev only).\n\nSet the collection variables `base_url` and `token` (or use the accompanying environment) before running requests.",
+    "description": "Internal HTTP API around yt-dlp + ffmpeg + whisper.cpp — keeps media binaries and heavy transcription off the load-balanced CHBackend.\n\nAll routes except `/health` require `Authorization: Bearer {{token}}` (auth is skipped only if `MEDIA_SERVICE_TOKEN` is unset on the server — dev only).\n\n**Async job queue**: `YouTube Transcribe` and `Audio Upload Transcribe` don't return a result directly — they enqueue a job on a Redis/BullMQ queue and respond `202 { jobId, status: \"queued\" }`. Each has a test script that saves `jobId` into the collection variable `job_id`, so you can immediately run **Get Job Status** afterward to poll it (it reads `{{job_id}}`). Keep polling until `status` is `done` (result in `result`) or `failed` (details in `error`). `YouTube Search` stays synchronous — it's a fast metadata lookup, not worth a queue round-trip — and returns its result directly.\n\nSet the collection variables `base_url` and `token` (or use the accompanying environment) before running requests.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -13,7 +13,8 @@
   },
   "variable": [
     { "key": "base_url", "value": "http://localhost:4020", "type": "string" },
-    { "key": "token", "value": "", "type": "string" }
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "job_id", "value": "", "type": "string" }
   ],
   "item": [
     {
@@ -61,7 +62,7 @@
           "host": ["{{base_url}}"],
           "path": ["youtube", "search"]
         },
-        "description": "Keyword search via yt-dlp `ytsearch` (no YouTube API key needed).\n\n**Body**\n- `keyword` (string, required)\n- `max` (number, optional, default 15, clamped 1–50)\n\n**Errors**\n- `400` — `keyword` missing/not a string\n- `401` — missing/invalid bearer token\n- `500` — yt-dlp not found or failed"
+        "description": "Keyword search via yt-dlp `ytsearch` (no YouTube API key needed). Synchronous — not queued.\n\n**Body**\n- `keyword` (string, required)\n- `max` (number, optional, default 15, clamped 1–50)\n\n**Errors**\n- `400` — `keyword` missing/not a string\n- `401` — missing/invalid bearer token\n- `500` — yt-dlp not found or failed"
       },
       "response": [
         {
@@ -113,6 +114,21 @@
     },
     {
       "name": "YouTube Transcribe",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "  const body = pm.response.json();",
+              "  pm.collectionVariables.set('job_id', body.jobId);",
+              "  pm.test('has jobId', () => pm.expect(body.jobId).to.be.a('string'));",
+              "}"
+            ]
+          }
+        }
+      ],
       "request": {
         "method": "POST",
         "header": [
@@ -128,36 +144,22 @@
           "host": ["{{base_url}}"],
           "path": ["youtube", "transcribe"]
         },
-        "description": "Fetches metadata + transcript for one video. Prefers yt-dlp captions (in the language order configured by `YTDLP_SUB_LANGS`); if none exist and `ASR_ENABLED=true` on the server, downloads the audio and transcribes it with whisper.cpp.\n\n**Body**\n- `url` (string, required) — a YouTube video URL\n\n**Response fields**\n- `source` — `\"captions\"` or `\"asr\"`\n- `text` — title + description + transcript, concatenated and truncated to `YTDLP_MAX_TRANSCRIPT_CHARS`\n- `meta` — video metadata (uploader, view/like counts, duration, upload date, etc.)\n\n**Errors**\n- `400` — `url` missing/not a string\n- `401` — missing/invalid bearer token\n- `422` — no usable transcript (no captions, and ASR disabled or produced no text) — treat as a failed source\n- `500` — yt-dlp not found or failed\n- `502` — yt-dlp metadata output could not be parsed, or audio extraction produced no WAV\n\nNote: this endpoint can be slow — ASR fallback runs whisper.cpp over the full audio (server timeout defaults to 30 min, `ASR_TIMEOUT_MS`). Consider raising Postman's request timeout for this call."
+        "description": "Fetches metadata + transcript for one video. Prefers yt-dlp captions (in the language order configured by `YTDLP_SUB_LANGS`); if none exist and `ASR_ENABLED=true` on the server, downloads the audio and transcribes it with whisper.cpp. Enqueues a job — poll **Get Job Status** for the result.\n\n**Body**\n- `url` (string, required) — a YouTube video URL\n\n**202 job result** (via `GET /jobs/:id`)\n- `source` — `\"captions\"` or `\"asr\"`\n- `text` — title + description + transcript, concatenated and truncated to `YTDLP_MAX_TRANSCRIPT_CHARS`\n- `meta` — video metadata (uploader, view/like counts, duration, upload date, etc.)\n\nIf there's no usable transcript (no captions, and ASR disabled or produced no text), the job **fails** — `GET /jobs/:id` reports `status: \"failed\"`, `error.statusCode: 422`. See the **Get Job Status** request's \"failed\" example.\n\n**Errors** (returned directly, before anything is queued)\n- `400` — `url` missing/not a string\n- `401` — missing/invalid bearer token\n\nNote: this job can be slow — ASR fallback runs whisper.cpp over the full audio (server timeout defaults to 30 min, `ASR_TIMEOUT_MS`)."
       },
       "response": [
         {
-          "name": "200 OK - captions",
+          "name": "202 Accepted",
           "originalRequest": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\"\n}" },
             "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
           },
-          "status": "OK",
-          "code": 200,
+          "status": "Accepted",
+          "code": 202,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n  \"title\": \"lofi hip hop radio - beats to relax/study to\",\n  \"text\": \"Title: lofi hip hop radio - beats to relax/study to\\n\\nDescription: 24/7 lofi hip hop radio...\\n\\nTranscript:\\n[no spoken words — instrumental]\",\n  \"language\": \"en\",\n  \"source\": \"captions\",\n  \"meta\": {\n    \"description\": \"24/7 lofi hip hop radio...\",\n    \"uploader\": \"Lofi Girl\",\n    \"channelId\": \"UCSJ4gkVC6NrvII8umztf0Ow\",\n    \"viewCount\": 123456789,\n    \"likeCount\": 654321,\n    \"duration\": 0,\n    \"uploadDate\": \"20200101\",\n    \"videoId\": \"jfKfPfyJRdk\",\n    \"captionLanguage\": \"en\",\n    \"hasTranscript\": true,\n    \"transcriptSource\": \"captions\"\n  }\n}"
-        },
-        {
-          "name": "422 Unprocessable - no transcript",
-          "originalRequest": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=EXAMPLE\"\n}" },
-            "url": { "raw": "{{base_url}}/youtube/transcribe", "host": ["{{base_url}}"], "path": ["youtube", "transcribe"] }
-          },
-          "status": "Unprocessable Entity",
-          "code": 422,
-          "_postman_previewlanguage": "json",
-          "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"error\": \"No usable transcript — no captions available (ASR disabled)\"\n}"
+          "body": "{\n  \"jobId\": \"43\",\n  \"status\": \"queued\"\n}"
         },
         {
           "name": "400 Bad Request - missing url",
@@ -191,6 +193,21 @@
     },
     {
       "name": "Audio Upload Transcribe",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "  const body = pm.response.json();",
+              "  pm.collectionVariables.set('job_id', body.jobId);",
+              "  pm.test('has jobId', () => pm.expect(body.jobId).to.be.a('string'));",
+              "}"
+            ]
+          }
+        }
+      ],
       "request": {
         "method": "POST",
         "header": [],
@@ -209,21 +226,21 @@
           "host": ["{{base_url}}"],
           "path": ["audio", "transcribe"]
         },
-        "description": "General-purpose transcription for a directly-uploaded audio file (no YouTube involved). Converts the upload to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — there's no captions fallback, so ASR must be configured on the server.\n\n**Body** — `multipart/form-data`\n- `audio` (file, required) — max `UPLOAD_MAX_BYTES` (default 50MB); allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`)\n\n**Response**\n- `{ text, language }` — `text` may be `\"\"` for silent/instrumental audio; that's a normal 200, not an error\n\n**Errors**\n- `400` — no `audio` file field in the request\n- `401` — missing/invalid bearer token\n- `413` — file exceeds `UPLOAD_MAX_BYTES`\n- `415` — disallowed file extension, or extension/mimetype mismatch\n- `500` — ffmpeg/whisper not found or failed\n- `503` — ASR isn't configured (`ASR_ENABLED=false` or `WHISPER_MODEL_PATH` unset)\n\nNote: whisper.cpp transcription can be slow for longer files — consider raising Postman's request timeout for this call."
+        "description": "General-purpose transcription for a directly-uploaded audio file (no YouTube involved). Converts the upload to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — there's no captions fallback, so ASR must be configured on the server. Enqueues a job — poll **Get Job Status** for the result.\n\n**Body** — `multipart/form-data`\n- `audio` (file, required) — max `UPLOAD_MAX_BYTES` (default 50MB); allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`)\n\n**202 job result** (via `GET /jobs/:id`)\n- `{ text, language }` — `text` may be `\"\"` for silent/instrumental audio; that's a normal `done` job, not a failure\n\n**Errors** (returned directly, before anything is queued — the upload itself still happens synchronously)\n- `400` — no `audio` file field in the request\n- `401` — missing/invalid bearer token\n- `413` — file exceeds `UPLOAD_MAX_BYTES`\n- `415` — disallowed file extension, or extension/mimetype mismatch\n- `503` — ASR isn't configured (`ASR_ENABLED=false` or `WHISPER_MODEL_PATH` unset)\n\nNote: whisper.cpp transcription can be slow for longer files — the worker (not this request) absorbs that latency."
       },
       "response": [
         {
-          "name": "200 OK",
+          "name": "202 Accepted",
           "originalRequest": {
             "method": "POST",
             "body": { "mode": "formdata", "formdata": [{ "key": "audio", "type": "file", "src": [] }] },
             "url": { "raw": "{{base_url}}/audio/transcribe", "host": ["{{base_url}}"], "path": ["audio", "transcribe"] }
           },
-          "status": "OK",
-          "code": 200,
+          "status": "Accepted",
+          "code": 202,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"text\": \"Thanks for calling support, how can I help you today?\",\n  \"language\": \"en\"\n}"
+          "body": "{\n  \"jobId\": \"44\",\n  \"status\": \"queued\"\n}"
         },
         {
           "name": "400 Bad Request - missing audio field",
@@ -289,6 +306,93 @@
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
           "body": "{\n  \"error\": \"Audio transcription is disabled (ASR_ENABLED=false).\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Get Job Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/jobs/{{job_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["jobs", "{{job_id}}"]
+        },
+        "description": "Poll the status/result of a job previously enqueued by **YouTube Transcribe** or **Audio Upload Transcribe** (`YouTube Search` is synchronous and doesn't use the queue). Those requests save their `jobId` into the collection variable `job_id`, which this request reads by default — run one of them first, or set `job_id` manually.\n\n**Response**\n- `status` — one of `queued` | `processing` | `done` | `failed`\n- `result` — present when `status: \"done\"`; shape depends on which endpoint enqueued the job\n- `error` — present when `status: \"failed\"`: `{ message, statusCode }`, where `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for no usable transcript, `502` for a yt-dlp/metadata failure, `500` otherwise)\n\n**Errors**\n- `401` — missing/invalid bearer token\n- `404` — job id doesn't exist (never existed, or evicted after `JOB_RETENTION_MS`)"
+      },
+      "response": [
+        {
+          "name": "200 OK - queued",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["jobs", "{{job_id}}"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"queued\"\n}"
+        },
+        {
+          "name": "200 OK - processing",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["jobs", "{{job_id}}"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"processing\"\n}"
+        },
+        {
+          "name": "200 OK - done (youtube/transcribe result)",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["jobs", "{{job_id}}"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"done\",\n  \"result\": {\n    \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n    \"title\": \"lofi hip hop radio - beats to relax/study to\",\n    \"text\": \"Title: lofi hip hop radio - beats to relax/study to\\n\\nDescription: 24/7 lofi hip hop radio...\\n\\nTranscript:\\n[no spoken words — instrumental]\",\n    \"language\": \"en\",\n    \"source\": \"captions\",\n    \"meta\": {\n      \"description\": \"24/7 lofi hip hop radio...\",\n      \"uploader\": \"Lofi Girl\",\n      \"channelId\": \"UCSJ4gkVC6NrvII8umztf0Ow\",\n      \"viewCount\": 123456789,\n      \"likeCount\": 654321,\n      \"duration\": 0,\n      \"uploadDate\": \"20200101\",\n      \"videoId\": \"jfKfPfyJRdk\",\n      \"captionLanguage\": \"en\",\n      \"hasTranscript\": true,\n      \"transcriptSource\": \"captions\"\n    }\n  }\n}"
+        },
+        {
+          "name": "200 OK - failed (youtube/transcribe, no usable transcript)",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["jobs", "{{job_id}}"] }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"id\": \"43\",\n  \"status\": \"failed\",\n  \"error\": {\n    \"message\": \"No usable transcript — no captions available (ASR disabled)\",\n    \"statusCode\": 422\n  }\n}"
+        },
+        {
+          "name": "401 Unauthorized",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["jobs", "{{job_id}}"] }
+          },
+          "status": "Unauthorized",
+          "code": 401,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Unauthorized\"\n}"
+        },
+        {
+          "name": "404 Not Found",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/jobs/does-not-exist", "host": ["{{base_url}}"], "path": ["jobs", "does-not-exist"] }
+          },
+          "status": "Not Found",
+          "code": 404,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"error\": \"Job not found\"\n}"
         }
       ]
     }

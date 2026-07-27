@@ -19,7 +19,6 @@ const cfg = require('./config');
 const QUEUE_NAME = 'media-jobs';
 
 const JOB_NAMES = {
-  YOUTUBE_SEARCH: 'youtube:search',
   YOUTUBE_TRANSCRIBE: 'youtube:transcribe',
   AUDIO_TRANSCRIBE: 'audio:transcribe',
 };

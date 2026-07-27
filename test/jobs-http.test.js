@@ -1,7 +1,10 @@
-// HTTP-level tests for the async job endpoints (POST .../search|transcribe +
+// HTTP-level tests for the async job endpoints (POST .../transcribe +
 // GET /jobs/:id). src/queue.js is swapped for an in-memory fake via
 // require.cache before src/server.js is required, so these run without a
 // real Redis instance (same require.cache-swap trick as test/ffmpeg.test.js).
+//
+// Note: POST /youtube/search is synchronous (not queued) — it's a fast
+// metadata lookup, not worth the queue round-trip — so it isn't covered here.
 process.env.MEDIA_SERVICE_TOKEN = '';
 
 const { test, before, after } = require('node:test');
@@ -17,13 +20,12 @@ require.cache[queuePath] = {
   loaded: true,
   exports: {
     JOB_NAMES: {
-      YOUTUBE_SEARCH: 'youtube:search',
       YOUTUBE_TRANSCRIBE: 'youtube:transcribe',
       AUDIO_TRANSCRIBE: 'audio:transcribe',
     },
     enqueueJob: async (name, data) => {
       const id = String(nextId++);
-      fakeJobs.set(id, { name, data, state: 'completed', returnvalue: { data: [] } });
+      fakeJobs.set(id, { name, data, state: 'completed', returnvalue: { url: data.url, text: 'transcript' } });
       return id;
     },
     getJob: async (id) => {
@@ -55,11 +57,11 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-test('POST /youtube/search enqueues a job and returns 202', async () => {
-  const res = await fetch(`${baseUrl}/youtube/search`, {
+test('POST /youtube/transcribe enqueues a job and returns 202', async () => {
+  const res = await fetch(`${baseUrl}/youtube/transcribe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ keyword: 'lo-fi beats' }),
+    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }),
   });
   assert.strictEqual(res.status, 202);
   const body = await res.json();
@@ -67,8 +69,8 @@ test('POST /youtube/search enqueues a job and returns 202', async () => {
   assert.ok(body.jobId);
 });
 
-test('POST /youtube/search still 400s on a missing keyword before touching the queue', async () => {
-  const res = await fetch(`${baseUrl}/youtube/search`, {
+test('POST /youtube/transcribe still 400s on a missing url before touching the queue', async () => {
+  const res = await fetch(`${baseUrl}/youtube/transcribe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
@@ -77,10 +79,10 @@ test('POST /youtube/search still 400s on a missing keyword before touching the q
 });
 
 test('GET /jobs/:id reports a completed job\'s result', async () => {
-  const submit = await fetch(`${baseUrl}/youtube/search`, {
+  const submit = await fetch(`${baseUrl}/youtube/transcribe`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ keyword: 'lo-fi beats' }),
+    body: JSON.stringify({ url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }),
   });
   const { jobId } = await submit.json();
 
@@ -88,7 +90,7 @@ test('GET /jobs/:id reports a completed job\'s result', async () => {
   assert.strictEqual(res.status, 200);
   const body = await res.json();
   assert.strictEqual(body.status, 'done');
-  assert.deepStrictEqual(body.result, { data: [] });
+  assert.deepStrictEqual(body.result, { url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk', text: 'transcript' });
 });
 
 test('GET /jobs/:id reports a failed job with its message + statusCode', async () => {
