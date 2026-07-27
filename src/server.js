@@ -124,7 +124,16 @@ app.get(
     const state = await job.getState();
     const status = JOB_STATUS_MAP[state] || 'queued';
 
-    if (status === 'done') return res.json({ id: job.id, status, result: job.returnvalue });
+    // Timing, computed from BullMQ's own timestamps (already tracked per job,
+    // just not previously surfaced): how long it sat queued before a worker
+    // picked it up, and how long it's been (or took) actively processing.
+    // Using "now" in place of a timestamp that hasn't been set yet lets both
+    // fields report a live, growing duration for in-flight jobs.
+    const now = Date.now();
+    const queuedMs = (job.processedOn ?? now) - job.timestamp;
+    const processingMs = job.processedOn != null ? (job.finishedOn ?? now) - job.processedOn : null;
+
+    if (status === 'done') return res.json({ id: job.id, status, queuedMs, processingMs, result: job.returnvalue });
     if (status === 'failed') {
       // src/worker.js JSON-encodes { message, statusCode } into the thrown error's
       // message since BullMQ only persists err.message as failedReason.
@@ -134,9 +143,9 @@ app.get(
       } catch {
         error = { message: job.failedReason || 'Job failed', statusCode: 500 };
       }
-      return res.json({ id: job.id, status, error });
+      return res.json({ id: job.id, status, queuedMs, processingMs, error });
     }
-    res.json({ id: job.id, status });
+    res.json({ id: job.id, status, queuedMs, processingMs });
   }),
 );
 

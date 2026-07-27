@@ -319,7 +319,7 @@
           "host": ["{{base_url}}"],
           "path": ["jobs", "{{job_id}}"]
         },
-        "description": "Poll the status/result of a job previously enqueued by **YouTube Transcribe** or **Audio Upload Transcribe** (`YouTube Search` is synchronous and doesn't use the queue). Those requests save their `jobId` into the collection variable `job_id`, which this request reads by default — run one of them first, or set `job_id` manually.\n\n**Response**\n- `status` — one of `queued` | `processing` | `done` | `failed`\n- `result` — present when `status: \"done\"`; shape depends on which endpoint enqueued the job\n- `error` — present when `status: \"failed\"`: `{ message, statusCode }`, where `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for no usable transcript, `502` for a yt-dlp/metadata failure, `500` otherwise)\n\n**Errors**\n- `401` — missing/invalid bearer token\n- `404` — job id doesn't exist (never existed, or evicted after `JOB_RETENTION_MS`)"
+        "description": "Poll the status/result of a job previously enqueued by **YouTube Transcribe** or **Audio Upload Transcribe** (`YouTube Search` is synchronous and doesn't use the queue). Those requests save their `jobId` into the collection variable `job_id`, which this request reads by default — run one of them first, or set `job_id` manually.\n\n**Response**\n- `status` — one of `queued` | `processing` | `done` | `failed`\n- `queuedMs` — time spent waiting before a worker picked it up. Fixed once processing starts; while still `queued` it keeps growing against \"now\" — a large, still-climbing value with no worker consuming the queue is the classic \"forgot to start ch-media-worker\" symptom\n- `processingMs` — time spent actively processing. `null` until a worker picks the job up, then grows against \"now\" until it finishes\n- `result` — present when `status: \"done\"`; shape depends on which endpoint enqueued the job\n- `error` — present when `status: \"failed\"`: `{ message, statusCode }`, where `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for no usable transcript, `502` for a yt-dlp/metadata failure, `500` otherwise)\n\n**Errors**\n- `401` — missing/invalid bearer token\n- `404` — job id doesn't exist (never existed, or evicted after `JOB_RETENTION_MS`)"
       },
       "response": [
         {
@@ -332,7 +332,7 @@
           "code": 200,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"id\": \"42\",\n  \"status\": \"queued\"\n}"
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"queued\",\n  \"queuedMs\": 1200,\n  \"processingMs\": null\n}"
         },
         {
           "name": "200 OK - processing",
@@ -344,7 +344,7 @@
           "code": 200,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"id\": \"42\",\n  \"status\": \"processing\"\n}"
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"processing\",\n  \"queuedMs\": 1450,\n  \"processingMs\": 8300\n}"
         },
         {
           "name": "200 OK - done (youtube/transcribe result)",
@@ -356,7 +356,7 @@
           "code": 200,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"id\": \"42\",\n  \"status\": \"done\",\n  \"result\": {\n    \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n    \"title\": \"lofi hip hop radio - beats to relax/study to\",\n    \"text\": \"Title: lofi hip hop radio - beats to relax/study to\\n\\nDescription: 24/7 lofi hip hop radio...\\n\\nTranscript:\\n[no spoken words — instrumental]\",\n    \"language\": \"en\",\n    \"source\": \"captions\",\n    \"meta\": {\n      \"description\": \"24/7 lofi hip hop radio...\",\n      \"uploader\": \"Lofi Girl\",\n      \"channelId\": \"UCSJ4gkVC6NrvII8umztf0Ow\",\n      \"viewCount\": 123456789,\n      \"likeCount\": 654321,\n      \"duration\": 0,\n      \"uploadDate\": \"20200101\",\n      \"videoId\": \"jfKfPfyJRdk\",\n      \"captionLanguage\": \"en\",\n      \"hasTranscript\": true,\n      \"transcriptSource\": \"captions\"\n    }\n  }\n}"
+          "body": "{\n  \"id\": \"42\",\n  \"status\": \"done\",\n  \"queuedMs\": 1450,\n  \"processingMs\": 42300,\n  \"result\": {\n    \"url\": \"https://www.youtube.com/watch?v=jfKfPfyJRdk\",\n    \"title\": \"lofi hip hop radio - beats to relax/study to\",\n    \"text\": \"Title: lofi hip hop radio - beats to relax/study to\\n\\nDescription: 24/7 lofi hip hop radio...\\n\\nTranscript:\\n[no spoken words — instrumental]\",\n    \"language\": \"en\",\n    \"source\": \"captions\",\n    \"meta\": {\n      \"description\": \"24/7 lofi hip hop radio...\",\n      \"uploader\": \"Lofi Girl\",\n      \"channelId\": \"UCSJ4gkVC6NrvII8umztf0Ow\",\n      \"viewCount\": 123456789,\n      \"likeCount\": 654321,\n      \"duration\": 0,\n      \"uploadDate\": \"20200101\",\n      \"videoId\": \"jfKfPfyJRdk\",\n      \"captionLanguage\": \"en\",\n      \"hasTranscript\": true,\n      \"transcriptSource\": \"captions\"\n    }\n  }\n}"
         },
         {
           "name": "200 OK - failed (youtube/transcribe, no usable transcript)",
@@ -368,7 +368,7 @@
           "code": 200,
           "_postman_previewlanguage": "json",
           "header": [{ "key": "Content-Type", "value": "application/json" }],
-          "body": "{\n  \"id\": \"43\",\n  \"status\": \"failed\",\n  \"error\": {\n    \"message\": \"No usable transcript — no captions available (ASR disabled)\",\n    \"statusCode\": 422\n  }\n}"
+          "body": "{\n  \"id\": \"43\",\n  \"status\": \"failed\",\n  \"queuedMs\": 900,\n  \"processingMs\": 3100,\n  \"error\": {\n    \"message\": \"No usable transcript — no captions available (ASR disabled)\",\n    \"statusCode\": 422\n  }\n}"
         },
         {
           "name": "401 Unauthorized",

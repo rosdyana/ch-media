@@ -25,7 +25,15 @@ require.cache[queuePath] = {
     },
     enqueueJob: async (name, data) => {
       const id = String(nextId++);
-      fakeJobs.set(id, { name, data, state: 'completed', returnvalue: { url: data.url, text: 'transcript' } });
+      fakeJobs.set(id, {
+        name,
+        data,
+        state: 'completed',
+        returnvalue: { url: data.url, text: 'transcript' },
+        timestamp: 1_000,
+        processedOn: 1_500,
+        finishedOn: 2_000,
+      });
       return id;
     },
     getJob: async (id) => {
@@ -35,6 +43,9 @@ require.cache[queuePath] = {
         id,
         returnvalue: job.returnvalue,
         failedReason: job.failedReason,
+        timestamp: job.timestamp,
+        processedOn: job.processedOn,
+        finishedOn: job.finishedOn,
         getState: async () => job.state,
       };
     },
@@ -91,17 +102,39 @@ test('GET /jobs/:id reports a completed job\'s result', async () => {
   const body = await res.json();
   assert.strictEqual(body.status, 'done');
   assert.deepStrictEqual(body.result, { url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk', text: 'transcript' });
+  assert.strictEqual(body.queuedMs, 500); // processedOn (1500) - timestamp (1000)
+  assert.strictEqual(body.processingMs, 500); // finishedOn (2000) - processedOn (1500)
 });
 
 test('GET /jobs/:id reports a failed job with its message + statusCode', async () => {
   const id = String(nextId++);
-  fakeJobs.set(id, { state: 'failed', failedReason: JSON.stringify({ message: 'boom', statusCode: 422 }) });
+  fakeJobs.set(id, {
+    state: 'failed',
+    failedReason: JSON.stringify({ message: 'boom', statusCode: 422 }),
+    timestamp: 1_000,
+    processedOn: 1_200,
+    finishedOn: 1_900,
+  });
 
   const res = await fetch(`${baseUrl}/jobs/${id}`);
   assert.strictEqual(res.status, 200);
   const body = await res.json();
   assert.strictEqual(body.status, 'failed');
   assert.deepStrictEqual(body.error, { message: 'boom', statusCode: 422 });
+  assert.strictEqual(body.queuedMs, 200);
+  assert.strictEqual(body.processingMs, 700);
+});
+
+test('GET /jobs/:id reports a still-queued job with a live queuedMs and no processingMs yet', async () => {
+  const id = String(nextId++);
+  fakeJobs.set(id, { state: 'waiting', timestamp: Date.now() - 250 });
+
+  const res = await fetch(`${baseUrl}/jobs/${id}`);
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.strictEqual(body.status, 'queued');
+  assert.strictEqual(body.processingMs, null);
+  assert.ok(body.queuedMs >= 250, `expected queuedMs >= 250, got ${body.queuedMs}`);
 });
 
 test('GET /jobs/:id 404s for an unknown job', async () => {

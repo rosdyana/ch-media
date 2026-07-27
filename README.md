@@ -40,8 +40,15 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
   - Allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`) → **415** if not allowed (also checked synchronously).
   - Converts to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — no captions fallback, so ASR must be configured (`ASR_ENABLED=true` + `WHISPER_MODEL_PATH`) or the initial request returns **503** before anything is queued.
   - Empty/silent audio is a normal **done** job with `text: ""` (there's no "source" concept to fail here).
-- `GET /jobs/:id` → `{ id, status, result?, error? }`
+- `GET /jobs/:id` → `{ id, status, queuedMs, processingMs, result?, error? }`
   - `status` is one of `queued` | `processing` | `done` | `failed`.
+  - `queuedMs` — time spent waiting before a worker picked the job up. Once processing
+    has started this is fixed; while still `queued` it keeps growing (measured against
+    "now") — a `queued` job with a large, still-climbing `queuedMs` means no worker is
+    consuming the queue.
+  - `processingMs` — time spent actively processing. `null` until a worker has picked the
+    job up; while `processing` it keeps growing (measured against "now") until it
+    finishes, then it's fixed.
   - `result` is present when `status: "done"` (shape depends on which endpoint enqueued it,
     as documented above).
   - `error` is present when `status: "failed"`: `{ message, statusCode }`, where
