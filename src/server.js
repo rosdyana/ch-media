@@ -7,9 +7,8 @@ const fsp = require('fs/promises');
 const express = require('express');
 const cfg = require('./config');
 const { MediaError } = require('./ytdlp');
-const { searchYoutube, transcribeYoutube } = require('./youtube');
 const { runUpload } = require('./upload');
-const { transcribeUploadedAudio } = require('./audio');
+const { enqueueJob, getJob, JOB_NAMES } = require('./queue');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -39,7 +38,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', asrEnabled: cfg.ASR_ENABLED, timestamp: new Date().toISOString() });
 });
 
-// POST /youtube/search { keyword, max }
+// POST /youtube/search { keyword, max } — enqueues a job, returns 202 + jobId.
+// Poll GET /jobs/:id for the { data } result.
 app.post(
   '/youtube/search',
   auth,
@@ -48,12 +48,13 @@ app.post(
     if (!keyword || typeof keyword !== 'string') {
       throw new MediaError('keyword is required', { statusCode: 400 });
     }
-    const data = await searchYoutube(keyword, max);
-    res.json({ data });
+    const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_SEARCH, { keyword, max });
+    res.status(202).json({ jobId, status: 'queued' });
   }),
 );
 
-// POST /youtube/transcribe { url }
+// POST /youtube/transcribe { url } — enqueues a job, returns 202 + jobId.
+// Poll GET /jobs/:id for the transcript result.
 app.post(
   '/youtube/transcribe',
   auth,
@@ -62,11 +63,13 @@ app.post(
     if (!url || typeof url !== 'string') {
       throw new MediaError('url is required', { statusCode: 400 });
     }
-    res.json(await transcribeYoutube(url));
+    const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url });
+    res.status(202).json({ jobId, status: 'queued' });
   }),
 );
 
-// POST /audio/transcribe (multipart, field "audio") — general-purpose upload transcription
+// POST /audio/transcribe (multipart, field "audio") — general-purpose upload transcription.
+// Enqueues a job and returns 202 + jobId; poll GET /jobs/:id for the result.
 app.post(
   '/audio/transcribe',
   auth,
@@ -77,15 +80,62 @@ app.post(
     if (!cfg.WHISPER_MODEL_PATH) {
       throw new MediaError('Audio transcription is unavailable (WHISPER_MODEL_PATH is not set).', { statusCode: 503 });
     }
+    let jobEnqueued = false;
     try {
       await runUpload(req, res);
       if (!req.file) {
         throw new MediaError('audio file is required (multipart field "audio")', { statusCode: 400 });
       }
-      res.json(await transcribeUploadedAudio(req.file.path, req.uploadTmpDir));
+      const jobId = await enqueueJob(JOB_NAMES.AUDIO_TRANSCRIBE, {
+        inputPath: req.file.path,
+        tmpDir: req.uploadTmpDir,
+      });
+      jobEnqueued = true;
+      res.status(202).json({ jobId, status: 'queued' });
     } finally {
-      if (req.uploadTmpDir) await fsp.rm(req.uploadTmpDir, { recursive: true, force: true }).catch(() => {});
+      // Only clean up here on a pre-enqueue failure (e.g. bad file type) — once
+      // a job is enqueued, the worker owns the tmp dir's lifetime (src/worker.js).
+      if (!jobEnqueued && req.uploadTmpDir) {
+        await fsp.rm(req.uploadTmpDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
+  }),
+);
+
+// BullMQ job state -> the simplified status this API reports.
+const JOB_STATUS_MAP = {
+  waiting: 'queued',
+  delayed: 'queued',
+  'waiting-children': 'queued',
+  prioritized: 'queued',
+  active: 'processing',
+  completed: 'done',
+  failed: 'failed',
+};
+
+// GET /jobs/:id — poll the status/result of a previously submitted job.
+app.get(
+  '/jobs/:id',
+  auth,
+  handle(async (req, res) => {
+    const job = await getJob(req.params.id);
+    if (!job) throw new MediaError('Job not found', { statusCode: 404 });
+    const state = await job.getState();
+    const status = JOB_STATUS_MAP[state] || 'queued';
+
+    if (status === 'done') return res.json({ id: job.id, status, result: job.returnvalue });
+    if (status === 'failed') {
+      // src/worker.js JSON-encodes { message, statusCode } into the thrown error's
+      // message since BullMQ only persists err.message as failedReason.
+      let error;
+      try {
+        error = JSON.parse(job.failedReason);
+      } catch {
+        error = { message: job.failedReason || 'Job failed', statusCode: 500 };
+      }
+      return res.json({ id: job.id, status, error });
+    }
+    res.json({ id: job.id, status });
   }),
 );
 

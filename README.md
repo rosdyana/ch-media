@@ -15,25 +15,46 @@ network, reachable only by `CHBackend`/`mi-worker`.
 
 All requests require `Authorization: Bearer $MEDIA_SERVICE_TOKEN` (unless the token is unset).
 
+Processing endpoints are **asynchronous**: they enqueue a job on a Redis-backed BullMQ
+queue and respond immediately with `202 { jobId, status: "queued" }`. The actual
+yt-dlp/ffmpeg/whisper.cpp work runs in a separate worker process (`src/worker.js`, run as
+`ch-media-worker.service`), not in the process that accepted the HTTP request — poll
+`GET /jobs/:id` until it reports `done` or `failed`.
+
 - `GET  /health` → `{ status, asrEnabled }`
-- `POST /youtube/search` `{ keyword, max? }` → `{ data: [{ url, title }] }` (yt-dlp `ytsearch`)
-- `POST /youtube/transcribe` `{ url }` → `{ url, title, text, language, source, meta }`
+- `POST /youtube/search` `{ keyword, max? }` → `202 { jobId, status: "queued" }`
+  Job result: `{ data: [{ url, title }] }` (yt-dlp `ytsearch`)
+- `POST /youtube/transcribe` `{ url }` → `202 { jobId, status: "queued" }`
+  Job result: `{ url, title, text, language, source, meta }`
   - `source` = `"captions"` or `"asr"`.
   - Prefers yt-dlp captions; if none exist **and** `ASR_ENABLED=true`, downloads the audio
     (16 kHz mono WAV via ffmpeg) and transcribes with whisper.cpp.
-  - Returns **422** when there's no usable transcript (caller should treat the source as failed).
-- `POST /audio/transcribe` — multipart upload, file field `audio` → `{ text, language }`
+  - The job fails (`GET /jobs/:id` → `status: "failed"`, `error.statusCode: 422`) when
+    there's no usable transcript (caller should treat the source as failed).
+- `POST /audio/transcribe` — multipart upload, file field `audio` → `202 { jobId, status: "queued" }`
+  Job result: `{ text, language }`
   - General-purpose transcription for a directly-uploaded audio file (no YouTube involved).
-  - Max size `UPLOAD_MAX_BYTES` (default 50MB) → **413** if exceeded.
-  - Allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`) → **415** if not allowed.
-  - Converts to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — no captions fallback, so ASR must be configured (`ASR_ENABLED=true` + `WHISPER_MODEL_PATH`) or this returns **503**.
-  - Empty/silent audio is a normal **200** with `text: ""` (there's no "source" concept to fail here).
+  - Max size `UPLOAD_MAX_BYTES` (default 50MB) → **413** if exceeded (checked synchronously
+    on upload, before anything is queued).
+  - Allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`) → **415** if not allowed (also checked synchronously).
+  - Converts to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — no captions fallback, so ASR must be configured (`ASR_ENABLED=true` + `WHISPER_MODEL_PATH`) or the initial request returns **503** before anything is queued.
+  - Empty/silent audio is a normal **done** job with `text: ""` (there's no "source" concept to fail here).
+- `GET /jobs/:id` → `{ id, status, result?, error? }`
+  - `status` is one of `queued` | `processing` | `done` | `failed`.
+  - `result` is present when `status: "done"` (shape depends on which endpoint enqueued it,
+    as documented above).
+  - `error` is present when `status: "failed"`: `{ message, statusCode }`, where
+    `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for
+    no usable transcript, `502` for a yt-dlp/metadata failure, `500` otherwise).
+  - Returns **404** if the job id doesn't exist (never existed, or evicted after
+    `JOB_RETENTION_MS`).
 
 A ready-to-import Postman collection + local environment live in [`postman/`](postman/).
 
 ## Requirements (host / image)
 
 - Node ≥ 20
+- Redis ≥ 6 reachable at `REDIS_URL` — the job queue's broker + result store
 - `yt-dlp` on `PATH` (or `YTDLP_PATH`)
 - `ffmpeg` on `PATH` (or `FFMPEG_PATH`) — needed for audio extraction + resample
 - For ASR: `whisper.cpp` CLI (`WHISPER_CPP_PATH`) + a model file (`WHISPER_MODEL_PATH`),
@@ -42,10 +63,15 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
 ## Run
 
 ```bash
-cp .env.example .env   # set MEDIA_SERVICE_TOKEN (+ whisper paths for ASR)
+cp .env.example .env   # set MEDIA_SERVICE_TOKEN, REDIS_URL (+ whisper paths for ASR)
 npm install
-npm start              # or: npm run dev
+npm start              # API — accepts requests, enqueues jobs
+npm run worker         # Worker — runs yt-dlp/ffmpeg/whisper.cpp, in a second terminal
 ```
+
+Both need to be running for jobs to actually complete — the API alone will accept
+requests and let you poll `GET /jobs/:id`, but jobs will sit at `status: "queued"` forever
+without a worker consuming them.
 
 Point `CHBackend` at it with `MEDIA_SERVICE_URL` + `MEDIA_SERVICE_TOKEN`.
 
@@ -62,7 +88,7 @@ front of it on a custom domain.
 It's idempotent, so re-running it just skips/upgrades what's already there.
 
 ```bash
-# copy the repo to the server first (see step 2), then from its root:
+# copy the repo to the server first (see step 3), then from its root:
 chmod +x scripts/install-deps.sh
 sudo ./scripts/install-deps.sh                              # Node + yt-dlp + ffmpeg only
 sudo ./scripts/install-deps.sh --with-asr                   # + whisper.cpp + base.en model
@@ -107,7 +133,32 @@ bash ./models/download-ggml-model.sh base.en
 
 </details>
 
-### 2. Deploy the app
+### 2. Install Redis (job queue broker)
+
+Debian bookworm's `redis-server` apt package is current enough — no special-casing needed
+like `yt-dlp`/`ffmpeg` above:
+
+```bash
+sudo apt install -y redis-server
+```
+
+Bind it to loopback only and require a password (edit `/etc/redis/redis.conf`):
+
+```
+bind 127.0.0.1 -::1
+requirepass <run: openssl rand -hex 32>
+```
+
+```bash
+sudo systemctl restart redis-server
+sudo systemctl enable redis-server
+redis-cli -a <the password above> ping   # expect PONG
+```
+
+This matches the existing loopback-only trust model — Redis is reachable only from
+`ch-media-service`/`ch-media-worker` on the same host, never exposed publicly.
+
+### 3. Deploy the app
 
 ```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin chmedia
@@ -127,6 +178,8 @@ PORT=4020
 HOST=127.0.0.1                  # loopback only — Caddy is the public entrypoint
 MEDIA_SERVICE_TOKEN=$(openssl rand -hex 32)   # generate once, keep it secret
 
+REDIS_URL=redis://:<redis password from step 2>@127.0.0.1:6379
+
 YTDLP_PATH=/usr/local/bin/yt-dlp
 FFMPEG_PATH=/usr/bin/ffmpeg
 WHISPER_CPP_PATH=/opt/whisper.cpp/build/bin/whisper-cli
@@ -134,14 +187,18 @@ WHISPER_MODEL_PATH=/opt/whisper.cpp/models/ggml-base.en.bin
 ASR_ENABLED=true
 ```
 
-### 3. Run it as a systemd service
+### 4. Run it as systemd services
+
+Two units — the API (`ch-media-service`) and the worker (`ch-media-worker`) — run as
+separate processes, so a heavy/crashing transcription job in the worker can't take down
+the HTTP API that's accepting new requests.
 
 `/etc/systemd/system/ch-media-service.service`:
 
 ```ini
 [Unit]
-Description=CH Media Service
-After=network.target
+Description=CH Media Service (API)
+After=network.target redis-server.service
 
 [Service]
 Type=simple
@@ -157,14 +214,35 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 ```
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now ch-media-service
-sudo systemctl status ch-media-service
-journalctl -u ch-media-service -f
+`/etc/systemd/system/ch-media-worker.service`:
+
+```ini
+[Unit]
+Description=CH Media Service (worker)
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=chmedia
+WorkingDirectory=/opt/ch-media-service
+EnvironmentFile=/opt/ch-media-service/.env
+ExecStart=/usr/bin/node src/worker.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-### 4. Reverse proxy with Caddy
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ch-media-service ch-media-worker
+sudo systemctl status ch-media-service ch-media-worker
+journalctl -u ch-media-service -u ch-media-worker -f
+```
+
+### 5. Reverse proxy with Caddy
 
 ```bash
 sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -188,7 +266,7 @@ sudo systemctl reload caddy
 
 Caddy auto-provisions/renews the TLS cert for the domain the first time it serves it.
 
-### 5. Cloudflare (custom domain)
+### 6. Cloudflare (custom domain)
 
 - **DNS**: add an `A` record `media` → the server's public IP, proxy status **Proxied**
   (orange cloud).
@@ -203,7 +281,7 @@ Caddy auto-provisions/renews the TLS cert for the domain the first time it serve
   Rule that allow-lists `CHBackend`'s outbound IP, so the endpoint isn't reachable by
   anyone who just guesses the domain.
 
-### 6. Point CHBackend at it
+### 7. Point CHBackend at it
 
 ```bash
 MEDIA_SERVICE_URL=https://media.yourdomain.com

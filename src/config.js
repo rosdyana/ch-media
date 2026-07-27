@@ -50,4 +50,15 @@ module.exports = {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
   UPLOAD_FFMPEG_TIMEOUT_MS: num(process.env.UPLOAD_FFMPEG_TIMEOUT_MS, 300_000), // 5 min; ASR_TIMEOUT_MS covers transcription
+
+  // Job queue (Redis + BullMQ) — endpoints enqueue work here instead of processing inline.
+  REDIS_URL: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+  // Concurrent BullMQ jobs the worker process runs at once. Distinct from ASR_CONCURRENCY,
+  // which separately throttles whisper.cpp invocations inside src/whisper.js — this lets
+  // cheap jobs (search, captions-only transcribe) run in parallel while heavy ASR calls
+  // stay serialized by that existing semaphore.
+  WORKER_CONCURRENCY: num(process.env.WORKER_CONCURRENCY, 4),
+  JOB_ATTEMPTS: num(process.env.JOB_ATTEMPTS, 1),
+  // How long finished jobs stick around in Redis before BullMQ evicts them.
+  JOB_RETENTION_MS: num(process.env.JOB_RETENTION_MS, 24 * 60 * 60 * 1000),
 };
