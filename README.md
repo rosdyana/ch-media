@@ -150,6 +150,15 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
   yt-dlp too, so the same block applies. Fix it at the source: set `YTDLP_COOKIES` (path to a
   cookies.txt) or `YTDLP_COOKIES_FROM_BROWSER` (browser name yt-dlp can read cookies from on
   this host) so yt-dlp authenticates like a signed-in browser.
+- If a request fails with `No usable transcript` and the reasons show `Requested format is not
+  available` for **metadata, captions, and ASR all at once**, that's not "this video has no
+  captions" — metadata/captions/ASR are independent yt-dlp calls that all share yt-dlp's format
+  resolution step, and that's what's failing. YouTube now requires solving a JS challenge (EJS)
+  to resolve formats for some videos; without it enabled, yt-dlp can't build a working format
+  list at all. Fix: make sure yt-dlp itself is current (`yt-dlp -U`, or re-run
+  `scripts/install-deps.sh`), then set `YTDLP_JS_RUNTIMES=node` (Node is already a dependency
+  here, so no extra runtime install needed) and `YTDLP_REMOTE_COMPONENTS=ejs:github` in `.env`.
+  The latter makes yt-dlp fetch and execute JS from GitHub, so it's opt-in only — not the default.
 
 ## Run
 

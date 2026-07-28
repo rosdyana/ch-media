@@ -29,6 +29,11 @@ module.exports = {
   PLAYER_CLIENT: process.env.YTDLP_PLAYER_CLIENT || '',
   COOKIES_FILE: process.env.YTDLP_COOKIES || '',
   COOKIES_FROM_BROWSER: process.env.YTDLP_COOKIES_FROM_BROWSER || '',
+  // Opt-in: YouTube's EJS challenge requires yt-dlp to run external JS to resolve formats for
+  // some videos. Enabling this makes yt-dlp fetch + execute JS from GitHub, so it's off by
+  // default. See README troubleshooting for "Requested format is not available".
+  JS_RUNTIMES: process.env.YTDLP_JS_RUNTIMES || '',
+  REMOTE_COMPONENTS: process.env.YTDLP_REMOTE_COMPONENTS || '',
 
   // ASR (Whisper) fallback
   ASR_ENABLED: process.env.ASR_ENABLED === 'true' || process.env.ASR_ENABLED === '1',

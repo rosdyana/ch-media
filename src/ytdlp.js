@@ -43,6 +43,8 @@ function commonArgs() {
   if (cfg.PLAYER_CLIENT) args.push('--extractor-args', `youtube:player_client=${cfg.PLAYER_CLIENT}`);
   if (cfg.COOKIES_FILE) args.push('--cookies', cfg.COOKIES_FILE);
   if (cfg.COOKIES_FROM_BROWSER) args.push('--cookies-from-browser', cfg.COOKIES_FROM_BROWSER);
+  if (cfg.JS_RUNTIMES) args.push('--js-runtimes', cfg.JS_RUNTIMES);
+  if (cfg.REMOTE_COMPONENTS) args.push('--remote-components', cfg.REMOTE_COMPONENTS);
   return args;
 }
 
