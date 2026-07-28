@@ -150,15 +150,28 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
   yt-dlp too, so the same block applies. Fix it at the source: set `YTDLP_COOKIES` (path to a
   cookies.txt) or `YTDLP_COOKIES_FROM_BROWSER` (browser name yt-dlp can read cookies from on
   this host) so yt-dlp authenticates like a signed-in browser.
-- If a request fails with `No usable transcript` and the reasons show `Requested format is not
-  available` for **metadata, captions, and ASR all at once**, that's not "this video has no
-  captions" — metadata/captions/ASR are independent yt-dlp calls that all share yt-dlp's format
-  resolution step, and that's what's failing. YouTube now requires solving a JS challenge (EJS)
-  to resolve formats for some videos; without it enabled, yt-dlp can't build a working format
-  list at all. Fix: make sure yt-dlp itself is current (`yt-dlp -U`, or re-run
-  `scripts/install-deps.sh`), then set `YTDLP_JS_RUNTIMES=node` (Node is already a dependency
-  here, so no extra runtime install needed) and `YTDLP_REMOTE_COMPONENTS=ejs:github` in `.env`.
-  The latter makes yt-dlp fetch and execute JS from GitHub, so it's opt-in only — not the default.
+- `Requested format is not available` means YouTube handed yt-dlp a degraded or empty format list
+  for this client — not that the video is missing captions. Metadata and caption fetching don't
+  need a playable format at all, so both pass `--ignore-no-formats-error` and survive it; only the
+  ASR audio download genuinely needs one, and it retries across `YTDLP_PLAYER_CLIENT_FALLBACKS`
+  (default `tv,web_safari,ios`) before giving up, since which of YouTube's clients get real
+  (non-SABR) formats shifts over time. If it still fails everywhere, the host itself is the
+  problem: **update yt-dlp first** (`yt-dlp -U`, or re-run `scripts/install-deps.sh`) — a stale
+  binary is the single most common cause — then check the JS-runtime and cookie notes below.
+- yt-dlp needs a JavaScript runtime to solve YouTube's player challenge; without one it warns
+  `some formats may be missing` and falls back to a degraded client. Node is already required by
+  this service, so `YTDLP_JS_RUNTIMES` defaults to `node` and is passed automatically **when the
+  installed yt-dlp is new enough to understand the flag** (it's probed once via `yt-dlp --help`,
+  so an older binary silently keeps the old behaviour instead of erroring on every call). If node
+  isn't on the service's `PATH` (common under systemd), set `YTDLP_JS_RUNTIMES=node:/usr/bin/node`.
+  Only if your yt-dlp build ships without the bundled EJS scripts do you also need
+  `YTDLP_REMOTE_COMPONENTS=ejs:github` — that makes yt-dlp fetch and execute JavaScript from
+  GitHub, so it stays opt-in and empty by default.
+- Captions are requested for several languages in one yt-dlp run, and YouTube frequently answers
+  the 2nd or 3rd language with a 429. That exits yt-dlp non-zero even though earlier languages
+  already downloaded, so caption files are read back **regardless of exit status** — one usable
+  language is all a transcript needs. A `salvaged <lang> captions ... despite:` log line means
+  exactly that happened, and is not an error.
 
 ## Run
 

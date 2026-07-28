@@ -30,7 +30,34 @@ function throttle() {
   return _gate;
 }
 
-function commonArgs() {
+/**
+ * One-shot, cached probe of which optional flags this yt-dlp build understands.
+ * An unknown flag makes yt-dlp exit non-zero on *every* call, so newer options
+ * (--js-runtimes, --remote-components — added late 2025 for YouTube's EJS
+ * challenge) are only sent when `--help` actually lists them. On any probe
+ * failure we assume unsupported, i.e. behave exactly as before.
+ */
+let _capsPromise = null;
+function getCapabilities() {
+  if (!_capsPromise) {
+    _capsPromise = execRaw(cfg.YTDLP_PATH, ['--help'], 30_000)
+      .then(({ stdout }) => ({
+        jsRuntimes: stdout.includes('--js-runtimes'),
+        remoteComponents: stdout.includes('--remote-components'),
+      }))
+      .catch(() => ({ jsRuntimes: false, remoteComponents: false }));
+  }
+  return _capsPromise;
+}
+
+/**
+ * Flags shared by every yt-dlp call. `playerClient` overrides cfg.PLAYER_CLIENT
+ * so callers can retry the same request under a different YouTube client when
+ * the default one stops returning usable formats (see PLAYER_CLIENT_FALLBACKS).
+ */
+async function commonArgs({ playerClient } = {}) {
+  const caps = await getCapabilities();
+  const client = playerClient === undefined ? cfg.PLAYER_CLIENT : playerClient;
   const args = [
     '--no-warnings',
     '--sleep-requests',
@@ -40,16 +67,25 @@ function commonArgs() {
     '--extractor-retries',
     String(cfg.EXTRACTOR_RETRIES),
   ];
-  if (cfg.PLAYER_CLIENT) args.push('--extractor-args', `youtube:player_client=${cfg.PLAYER_CLIENT}`);
+  if (client) args.push('--extractor-args', `youtube:player_client=${client}`);
   if (cfg.COOKIES_FILE) args.push('--cookies', cfg.COOKIES_FILE);
   if (cfg.COOKIES_FROM_BROWSER) args.push('--cookies-from-browser', cfg.COOKIES_FROM_BROWSER);
-  if (cfg.JS_RUNTIMES) args.push('--js-runtimes', cfg.JS_RUNTIMES);
-  if (cfg.REMOTE_COMPONENTS) args.push('--remote-components', cfg.REMOTE_COMPONENTS);
+  if (cfg.JS_RUNTIMES && caps.jsRuntimes) args.push('--js-runtimes', cfg.JS_RUNTIMES);
+  if (cfg.REMOTE_COMPONENTS && caps.remoteComponents) args.push('--remote-components', cfg.REMOTE_COMPONENTS);
   return args;
 }
 
 function isRateLimited(message) {
   return /HTTP Error 429|Too Many Requests|\b429\b/i.test(message || '');
+}
+
+/**
+ * yt-dlp couldn't resolve a playable format — typically YouTube served a
+ * degraded/empty format list to this client (SABR-only, bot-flagged datacenter
+ * IP, missing JS runtime). Retrying under a different player_client often works.
+ */
+function isFormatUnavailable(message) {
+  return /Requested format is not available|No video formats found|Only images are available/i.test(message || '');
 }
 
 function execRaw(bin, args, timeoutMs) {
@@ -94,4 +130,13 @@ async function runYtDlp(args) {
   }
 }
 
-module.exports = { MediaError, runYtDlp, execRaw, commonArgs, isRateLimited, sleep };
+module.exports = {
+  MediaError,
+  runYtDlp,
+  execRaw,
+  commonArgs,
+  getCapabilities,
+  isRateLimited,
+  isFormatUnavailable,
+  sleep,
+};

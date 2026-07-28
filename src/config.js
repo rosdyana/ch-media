@@ -29,11 +29,22 @@ module.exports = {
   PLAYER_CLIENT: process.env.YTDLP_PLAYER_CLIENT || '',
   COOKIES_FILE: process.env.YTDLP_COOKIES || '',
   COOKIES_FROM_BROWSER: process.env.YTDLP_COOKIES_FROM_BROWSER || '',
-  // Opt-in: YouTube's EJS challenge requires yt-dlp to run external JS to resolve formats for
-  // some videos. Enabling this makes yt-dlp fetch + execute JS from GitHub, so it's off by
-  // default. See README troubleshooting for "Requested format is not available".
-  JS_RUNTIMES: process.env.YTDLP_JS_RUNTIMES || '',
+  // YouTube requires a JS runtime to solve its player challenge; without one yt-dlp warns
+  // "some formats may be missing" and falls back to a degraded client. Node is already a hard
+  // dependency of this service, so we opt into it by default — it only runs JS locally.
+  // Set to "" to disable, or "node:/path/to/node" if node isn't on the service's PATH.
+  // Silently skipped when the installed yt-dlp is too old to know the flag.
+  JS_RUNTIMES: process.env.YTDLP_JS_RUNTIMES ?? 'node',
+  // Opt-in (empty default): makes yt-dlp FETCH AND EXECUTE JavaScript from GitHub. Only needed
+  // if your yt-dlp build doesn't bundle the EJS scripts. See README troubleshooting.
   REMOTE_COMPONENTS: process.env.YTDLP_REMOTE_COMPONENTS || '',
+  // Tried in order when a media download fails with "Requested format is not available" —
+  // YouTube degrades/rotates which clients get real formats, so switching client often works.
+  // Empty string = yt-dlp's own default client. Costs one extra request per attempt.
+  PLAYER_CLIENT_FALLBACKS: (process.env.YTDLP_PLAYER_CLIENT_FALLBACKS ?? 'tv,web_safari,ios')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 
   // ASR (Whisper) fallback
   ASR_ENABLED: process.env.ASR_ENABLED === 'true' || process.env.ASR_ENABLED === '1',
