@@ -194,6 +194,10 @@ This walks through a bare-metal/VM install on Debian: system binaries, the app a
 systemd service, Caddy as the local reverse proxy/TLS terminator, and Cloudflare in
 front of it on a custom domain.
 
+> Prefer not to install yt-dlp/ffmpeg/whisper.cpp directly on the host? See
+> [Deployment (Docker on Debian, behind Caddy)](#deployment-docker-on-debian-behind-caddy)
+> below for a containerized version of the same setup.
+
 ### 1. System packages, Node 20 + the media binaries
 
 `scripts/install-deps.sh` installs Node.js (NodeSource), `yt-dlp` (standalone binary),
@@ -400,3 +404,118 @@ Caddy auto-provisions/renews the TLS cert for the domain the first time it serve
 MEDIA_SERVICE_URL=https://media.yourdomain.com
 MEDIA_SERVICE_TOKEN=<same token as above>
 ```
+
+## Deployment (Docker on Debian, behind Caddy)
+
+A containerized alternative to the bare-metal walkthrough above — `Dockerfile` +
+`docker-compose.yml` build an image with Node, yt-dlp, ffmpeg and whisper.cpp already
+installed, and run `api` + `worker` + `redis` as three containers. Redis stays on an
+internal Docker network only (no host port published); the API container publishes a
+single **host port you choose**, so it can't collide with the other services already
+running on this box — that's the only port Caddy needs to know about.
+
+### 1. Install Docker
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$(whoami)"   # log out/in (or `newgrp docker`) for this to take effect
+docker compose version                # confirm the Compose plugin is present (v2)
+```
+
+### 2. Deploy the app
+
+```bash
+sudo mkdir -p /opt/ch-media-service
+sudo chown "$(whoami)" /opt/ch-media-service
+# copy/clone the repo into /opt/ch-media-service, then:
+cd /opt/ch-media-service
+cp .env.example .env
+```
+
+Edit `/opt/ch-media-service/.env` — same variables as the bare-metal setup, except
+`REDIS_URL`, `HOST`, `YTDLP_PATH`, `FFMPEG_PATH`, `WHISPER_CPP_PATH` and
+`WHISPER_MODEL_PATH` don't need to be set: the image already has those binaries on
+`PATH` and `docker-compose.yml` points `REDIS_URL` at the bundled `redis` container.
+You only need:
+
+```bash
+MEDIA_SERVICE_TOKEN=$(openssl rand -hex 32)   # generate once, keep it secret
+ASR_ENABLED=true                              # matches the image's bundled whisper.cpp model
+
+# This host runs several other web services — pick whichever port is free.
+# HOST_PORT is what Caddy's reverse_proxy points at; PORT (default 4020) is
+# only the app's *internal* port and rarely needs to change.
+HOST_PORT=4021
+```
+
+### 3. Build and start
+
+```bash
+docker compose build          # builds whisper.cpp + downloads the ggml model (~large-v3-turbo by default)
+docker compose up -d
+docker compose ps             # api, worker, redis should all be "healthy"/"running"
+curl http://127.0.0.1:4021/health
+```
+
+`restart: unless-stopped` in `docker-compose.yml` means all three containers come back
+on their own after a host reboot or crash, as long as the Docker daemon is enabled
+(`sudo systemctl enable docker`, on by default after the install script above) — no
+separate systemd unit needed for the app itself.
+
+Useful day-to-day commands:
+
+```bash
+docker compose logs -f api worker   # tail both processes' logs
+docker compose pull && docker compose up -d --build   # deploy new code (after a git pull)
+docker compose down                 # stop everything (add -v to also drop the redis-data volume)
+```
+
+To use a smaller/faster-to-build Whisper model than the `large-v3-turbo` default,
+rebuild with a different build arg (see `scripts/install-deps.sh --model` for valid
+names, e.g. `base.en`, `small.en`) **and** set the same name in `.env` — `WHISPER_MODEL_PATH`
+inside the container is derived from `.env`'s `WHISPER_MODEL`, so the two must match:
+
+```bash
+docker compose build --build-arg WHISPER_MODEL=base.en
+```
+
+```bash
+# .env
+WHISPER_MODEL=base.en
+```
+
+If you need yt-dlp cookies (see the bot-detection note under
+[Requirements](#requirements-host--image)), mount a `cookies.txt` into the containers
+and point `YTDLP_COOKIES` at it — add to both the `api` and `worker` service blocks in
+`docker-compose.yml`:
+
+```yaml
+    volumes:
+      - ./cookies.txt:/app/cookies.txt:ro
+```
+
+```bash
+# .env
+YTDLP_COOKIES=/app/cookies.txt
+```
+
+### 4. Reverse proxy with Caddy
+
+Same as the bare-metal setup (see [step 5](#5-reverse-proxy-with-caddy) above for
+installing Caddy itself) — just point `reverse_proxy` at whatever `HOST_PORT` you chose
+in `.env`:
+
+```
+media.yourdomain.com {
+    reverse_proxy 127.0.0.1:4021
+}
+```
+
+```bash
+sudo systemctl reload caddy
+```
+
+### 5. Cloudflare + point CHBackend at it
+
+Same as [step 6](#6-cloudflare-custom-domain) and [step 7](#7-point-chbackend-at-it)
+above — nothing Docker-specific here.

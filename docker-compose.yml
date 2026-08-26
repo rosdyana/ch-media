@@ -1,0 +1,69 @@
+name: ch-media-service
+
+# Shared by both the api and worker containers — same image, same env, same
+# network. Only the published port and the process command differ.
+x-app: &app
+  build: .
+  image: ch-media-service:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  # Pinned regardless of what's in .env — a .env reused from the bare-metal
+  # setup (see README) sets HOST=127.0.0.1 and host filesystem paths for
+  # these binaries, which would break networking/lookups inside the container.
+  environment:
+    PORT: ${PORT:-4020}
+    HOST: 0.0.0.0
+    REDIS_URL: redis://redis:6379
+    YTDLP_PATH: /usr/local/bin/yt-dlp
+    FFMPEG_PATH: /usr/bin/ffmpeg
+    WHISPER_CPP_PATH: /usr/local/bin/whisper-cli
+    WHISPER_MODEL_PATH: /opt/whisper-models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
+  depends_on:
+    redis:
+      condition: service_healthy
+  networks:
+    - internal
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+    # No `ports:` — reachable only from api/worker on the internal network.
+
+  api:
+    <<: *app
+    # HOST_PORT is what you point Caddy's reverse_proxy at; PORT is the port
+    # the app listens on inside the container. Bound to loopback only — this
+    # host runs several other services, so pick a free HOST_PORT in .env
+    # (e.g. HOST_PORT=4021) instead of touching the app's own PORT.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-4020}:${PORT:-4020}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-4020}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    command: ["node", "src/server.js"]
+
+  worker:
+    <<: *app
+    # No `ports:` — it only consumes the Redis queue, never accepts HTTP.
+    command: ["node", "src/worker.js"]
+
+networks:
+  internal:
+
+volumes:
+  redis-data:
