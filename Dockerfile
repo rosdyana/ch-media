@@ -34,9 +34,14 @@ ARG WHISPER_MODEL
 # child processes this app spawns and forwards SIGTERM properly as PID 1.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg curl ca-certificates libgomp1 tini \
-    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp_linux (not the plain "yt-dlp" asset — that one's a Python zipapp that
+# shells out to a system `python3`, which this image doesn't have) is the
+# standalone PyInstaller build with its own bundled interpreter, no deps.
+RUN curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version
 
 COPY --from=whisper-builder /opt/whisper.cpp/build/bin/whisper-cli /usr/local/bin/whisper-cli
 RUN mkdir -p /opt/whisper-models
