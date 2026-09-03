@@ -39,10 +39,17 @@ const worker = new Worker(
       return await processJob(job);
     } catch (err) {
       const statusCode = err instanceof MediaError ? err.statusCode : 500;
+      const retryable = err instanceof MediaError ? !!err.retryable : false;
       if (statusCode >= 500) console.error(`[media-worker] job ${job.id} (${job.name}) failed:`, err);
+      // A rate limit isn't this job's fault and isn't permanent — log it as such
+      // so it doesn't read like a broken video, and so the shared cooldown is
+      // visible in the worker log.
+      else if (retryable) console.warn(`[media-worker] job ${job.id} (${job.name}) failed, retryable: ${err.message}`);
       // BullMQ only persists err.message as the job's failedReason, so encode
       // the status code alongside it for GET /jobs/:id to parse back out.
-      throw new Error(JSON.stringify({ message: err.message || 'Internal error', statusCode }));
+      // `retryable` tells the caller whether re-queueing could plausibly help;
+      // the queue itself does not retry (JOB_ATTEMPTS defaults to 1).
+      throw new Error(JSON.stringify({ message: err.message || 'Internal error', statusCode, retryable }));
     }
   },
   { connection: getConnection(), concurrency: cfg.WORKER_CONCURRENCY },

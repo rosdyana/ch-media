@@ -31,6 +31,10 @@ const handle = (fn) => (req, res) => {
   Promise.resolve(fn(req, res)).catch((err) => {
     const status = err instanceof MediaError ? err.statusCode : 500;
     if (status >= 500) console.error('[media] error:', err);
+    // Only the synchronous routes (POST /youtube/search) can surface a 429 as a
+    // real HTTP status — the queued ones report it inside GET /jobs/:id's body.
+    // Advertise the cooldown so a caller doesn't retry straight into it.
+    if (status === 429) res.set('Retry-After', String(Math.ceil(cfg.COOLDOWN_MS / 1000)));
     res.status(status).json({ error: err.message || 'Internal error' });
   });
 };
@@ -135,13 +139,15 @@ app.get(
 
     if (status === 'done') return res.json({ id: job.id, status, queuedMs, processingMs, result: job.returnvalue });
     if (status === 'failed') {
-      // src/worker.js JSON-encodes { message, statusCode } into the thrown error's
-      // message since BullMQ only persists err.message as failedReason.
+      // src/worker.js JSON-encodes { message, statusCode, retryable } into the
+      // thrown error's message since BullMQ only persists err.message as
+      // failedReason. Note this response is still HTTP 200 — a 429 in there means
+      // "re-queue this later", and the caller has to read the field to see it.
       let error;
       try {
-        error = JSON.parse(job.failedReason);
+        error = { retryable: false, ...JSON.parse(job.failedReason) };
       } catch {
-        error = { message: job.failedReason || 'Job failed', statusCode: 500 };
+        error = { message: job.failedReason || 'Job failed', statusCode: 500, retryable: false };
       }
       return res.json({ id: job.id, status, queuedMs, processingMs, error });
     }

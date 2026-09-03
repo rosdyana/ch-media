@@ -11,6 +11,11 @@ x-app: &app
   # Pinned regardless of what's in .env — a .env reused from the bare-metal
   # setup (see README) sets HOST=127.0.0.1 and host filesystem paths for
   # these binaries, which would break networking/lookups inside the container.
+  #
+  # If you ever add a `cpus:` limit here, also pin ASR_THREADS in .env: it
+  # defaults to os.availableParallelism(), which reads the CPU affinity mask and
+  # cannot see Docker's --cpus quota, so whisper.cpp would spawn one thread per
+  # *host* core and end up slower than the default it replaced.
   environment:
     PORT: ${PORT:-4020}
     HOST: 0.0.0.0

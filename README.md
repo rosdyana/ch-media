@@ -103,13 +103,19 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
 - `POST /youtube/transcribe` `{ url }` → `202 { jobId, status: "queued" }`
   Job result: `{ url, title, text, language, source, meta }`
   - `source` = `"captions"` or `"asr"`.
-  - Prefers yt-dlp captions; whenever there's still no transcript **and** `ASR_ENABLED=true` —
-    no subtitles exist, or yt-dlp itself failed on the metadata/caption step (bot-detection,
-    geo-block, transient errors, etc.) — it falls back to downloading the audio (16 kHz mono
-    WAV via yt-dlp's ffmpeg postprocessor) and transcribing with whisper.cpp.
-  - The job fails (`GET /jobs/:id` → `status: "failed"`, `error.statusCode: 422`) only when
-    every attempted step failed to produce a transcript; the error message lists which of
-    metadata/captions/ASR were attempted and why each one failed.
+  - Prefers yt-dlp captions. The metadata step decides which caption language to ask for
+    (see [Requirements](#requirements-host--image)), so the caption fetch is **one** request
+    for one language — and is skipped entirely when the metadata shows no usable track.
+  - Falls back to downloading the audio (16 kHz mono WAV via yt-dlp's ffmpeg postprocessor)
+    and transcribing with whisper.cpp when there's still no transcript **and**
+    `ASR_ENABLED=true` **and** captions are genuinely unavailable — none exist, or yt-dlp
+    failed for a reason a retry wouldn't fix (bot-detection, geo-block). A **rate limit is
+    not** such a reason: see the 429 note below.
+  - The job fails (`GET /jobs/:id` → `status: "failed"`) with `error.statusCode: 422` when
+    every attempted step failed to produce a transcript, or **`429` with
+    `error.retryable: true`** when YouTube throttled us and the job should simply be
+    re-queued later. Either way the message lists which of metadata/captions/ASR were
+    attempted or skipped, and why.
 - `POST /audio/transcribe` — multipart upload, file field `audio` → `202 { jobId, status: "queued" }`
   Job result: `{ text, language }`
   - General-purpose transcription for a directly-uploaded audio file (no YouTube involved).
@@ -117,6 +123,10 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
     on upload, before anything is queued).
   - Allowed extensions `UPLOAD_ALLOWED_EXTENSIONS` (default `.mp3,.wav,.m4a,.ogg,.webm,.flac`) → **415** if not allowed (also checked synchronously).
   - Converts to 16 kHz mono WAV via ffmpeg, then transcribes with whisper.cpp — no captions fallback, so ASR must be configured (`ASR_ENABLED=true` + `WHISPER_MODEL_PATH`) or the initial request returns **503** before anything is queued.
+  - Also subject to `ASR_MAX_DURATION_SEC` → **422**. This route never knows a duration up
+    front, so it's measured from the converted WAV (16 kHz mono s16 = 32000 bytes/s, no
+    ffprobe needed). Note `UPLOAD_MAX_BYTES` alone doesn't bound this: 50MB of 128kbps MP3 is
+    ~52 minutes of audio, well past what CPU-only whisper finishes inside `ASR_TIMEOUT_MS`.
   - Empty/silent audio is a normal **done** job with `text: ""` (there's no "source" concept to fail here).
 - `GET /jobs/:id` → `{ id, status, queuedMs, processingMs, result?, error? }`
   - `status` is one of `queued` | `processing` | `done` | `failed`.
@@ -129,9 +139,14 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
     finishes, then it's fixed.
   - `result` is present when `status: "done"` (shape depends on which endpoint enqueued it,
     as documented above).
-  - `error` is present when `status: "failed"`: `{ message, statusCode }`, where
+  - `error` is present when `status: "failed"`: `{ message, statusCode, retryable }`, where
     `statusCode` mirrors what the old synchronous API would have returned (e.g. `422` for
-    no usable transcript after exhausting captions + ASR, `500` otherwise).
+    no usable transcript after exhausting captions + ASR, `429` when YouTube rate-limited
+    us, `500` otherwise), and `retryable` is `true` only for failures a later attempt could
+    plausibly survive (today: rate limits).
+  - ⚠️ **This route itself still returns HTTP 200** for a failed job — the `429` lives in
+    `error.statusCode`, not in the HTTP status. Only the synchronous `POST /youtube/search`
+    returns a real HTTP `429` (with `Retry-After`). Callers must read the body field.
   - Returns **404** if the job id doesn't exist (never existed, or evicted after
     `JOB_RETENTION_MS`).
 
@@ -167,11 +182,49 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
   Only if your yt-dlp build ships without the bundled EJS scripts do you also need
   `YTDLP_REMOTE_COMPONENTS=ejs:github` — that makes yt-dlp fetch and execute JavaScript from
   GitHub, so it stays opt-in and empty by default.
-- Captions are requested for several languages in one yt-dlp run, and YouTube frequently answers
-  the 2nd or 3rd language with a 429. That exits yt-dlp non-zero even though earlier languages
-  already downloaded, so caption files are read back **regardless of exit status** — one usable
-  language is all a transcript needs. A `salvaged <lang> captions ... despite:` log line means
-  exactly that happened, and is not an error.
+- **Captions are requested one language at a time**, chosen from the metadata JSON's
+  `subtitles` / `automatic_captions` maps that the metadata step already fetches. Do not be
+  tempted to treat a key in `automatic_captions` as "this language exists": YouTube advertises
+  machine *translation* into ~150 languages, so an ordinary English video reports 157 auto
+  languages against 30 real manual ones. Only entries whose URL lacks `tlang=` are genuine
+  transcripts, and `subtitles.live_chat` is a chat-replay pseudo-track, not captions — both are
+  filtered out. Preference order is manual → original ASR → machine translation, each walked in
+  `YTDLP_SUB_LANGS` order. This is what took the caption stage from up to ten timedtext requests
+  per job down to one, which is the main defense against the 429s below.
+  Set `YTDLP_TRUST_CAPTION_METADATA=false` to go back to requesting every language — worth doing
+  if a player client starts returning info JSON with empty caption maps for videos that
+  demonstrably have captions, since trusting that would silently turn every job into an ASR job.
+- When the metadata step fails, the caption language list is unknown, so the old behaviour
+  applies: every `YTDLP_SUB_LANGS` language in one run, both manual and auto. YouTube frequently
+  answers the 2nd or 3rd with a 429, which exits yt-dlp non-zero even though earlier languages
+  already downloaded — so caption files are read back **regardless of exit status**, and before
+  any failure is classified. One usable language is all a transcript needs. A
+  `salvaged <lang> captions ... despite:` log line means exactly that happened, and is not an error.
+- **A 429 never falls through to ASR.** A rate limit says nothing about whether a video has
+  captions, so treating one as "captions missing" used to download the audio and grind whisper.cpp
+  for the full `ASR_TIMEOUT_MS` on a video whose captions were fine — one throttled request
+  costing ~30 minutes of CPU and returning nothing. Such a job now fails in seconds with
+  `error.statusCode: 429` and `error.retryable: true`; re-queue it later. `ASR_ON_RATE_LIMIT=true`
+  restores the old fall-through.
+- On a 429 the service opens a **process-wide cooldown** (`YTDLP_COOLDOWN_MS`, doubling per fresh
+  429 up to `YTDLP_COOLDOWN_MAX_MS`, cleared by any success) on top of the per-call
+  `YTDLP_MIN_GAP_MS` pacing. It is shared by every in-flight job in that process, so one job's
+  429 slows all `WORKER_CONCURRENCY` of them instead of just itself. Retries *within* one call
+  don't wait on it — they'd otherwise stretch a single job across minutes before it could report
+  the retryable 429 its caller is waiting for. Note the cooldown is per-process: the API
+  (`/youtube/search`) and the worker keep separate state.
+- **ASR is capped by `ASR_MAX_DURATION_SEC`** (default 1200s), checked against the metadata's
+  duration *before* the audio is downloaded, and again from the WAV's size for the upload route.
+  Audio that can't finish inside `ASR_TIMEOUT_MS` costs the entire timeout and returns nothing, so
+  the download is wasted too. whisper.cpp also now runs greedy (`ASR_BEAM_SIZE`/`ASR_BEST_OF`
+  default to 1 instead of upstream's 5-beam search) with an explicit `ASR_THREADS`, and is given
+  the language we already know from the captions or metadata rather than `-l auto` — which decides
+  from only the first 30-second window and tagged an English video as Arabic in production. Each
+  successful run logs `Nx realtime`; use that to retune `ASR_MAX_DURATION_SEC` from measurement.
+- ⚠️ `YTDLP_JS_RUNTIMES` and `YTDLP_PLAYER_CLIENT_FALLBACKS` are read with `??`, so an **empty
+  string in `.env` means _disabled_, not _default_** — blanking them costs you the JS runtime
+  (→ degraded client → `Requested format is not available`) and the audio download's client
+  retries. `.env.example` keeps them commented out for this reason; don't "fill them in" as `""`.
 
 ## Run
 
@@ -483,6 +536,13 @@ docker compose build --build-arg WHISPER_MODEL=base.en
 # .env
 WHISPER_MODEL=base.en
 ```
+
+A smaller model also raises how much audio ASR can get through before
+`ASR_TIMEOUT_MS`, so raise `ASR_MAX_DURATION_SEC` alongside it — check the `Nx realtime`
+figure whisper logs on each success rather than guessing. And if you ever add a `cpus:`
+limit to the compose services, pin `ASR_THREADS` explicitly: it defaults to
+`os.availableParallelism()`, which reads the CPU affinity mask and cannot see Docker's
+`--cpus` quota, so whisper would otherwise spawn one thread per host core.
 
 If you need yt-dlp cookies (see the bot-detection note under
 [Requirements](#requirements-host--image)), mount a `cookies.txt` into the containers

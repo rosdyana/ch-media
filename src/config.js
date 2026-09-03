@@ -1,6 +1,22 @@
 require('dotenv').config();
 
+const os = require('os');
+
 const num = (v, d) => Number.parseInt(v, 10) || d;
+// Like `num`, but 0 is a real value rather than a fall-through to the default —
+// `Number.parseInt('0', 10) || d` yields `d`. Only for knobs where 0 means
+// something ("disabled"); `num` is left alone so e.g. ASR_CONCURRENCY=0 keeps
+// degrading to its default instead of deadlocking the semaphore.
+const intOr = (v, d) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) ? n : d;
+};
+// Unlike `num`, this can express a default of `true`: the inline
+// `process.env.X === 'true'` idiom used below for ASR_ENABLED silently turns any
+// unset flag into `false`, which is wrong for knobs that should be on by default.
+// Empty string counts as "unset" so a `.env` copied from .env.example with a blank
+// value gets the documented default instead of `false`.
+const bool = (v, d) => (v === undefined || v === '' ? d : v === 'true' || v === '1');
 
 module.exports = {
   PORT: num(process.env.PORT, 4020),
@@ -45,12 +61,45 @@ module.exports = {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
+  // The caption stage asks the metadata JSON which languages actually exist and then
+  // requests exactly one, instead of firing a timedtext request per configured language.
+  // Escape hatch: some player clients (tv, android_vr, bot-flagged sessions) hand back an
+  // info JSON with EMPTY caption maps for videos that demonstrably have captions. Trusting
+  // that would silently turn every job into an ASR job — strictly worse than before. Set
+  // this to "false" to fall back to the old "ask for every language" behaviour without a
+  // code change.
+  TRUST_CAPTION_METADATA: bool(process.env.YTDLP_TRUST_CAPTION_METADATA, true),
+  // Process-wide cooldown after a 429. MIN_GAP_MS paces normal calls; this is the much
+  // longer window every in-flight job waits out once YouTube has actually throttled us,
+  // so one job's 429 slows all WORKER_CONCURRENCY of them instead of just itself.
+  COOLDOWN_MS: num(process.env.YTDLP_COOLDOWN_MS, 60_000),
+  COOLDOWN_MAX_MS: num(process.env.YTDLP_COOLDOWN_MAX_MS, 600_000),
 
   // ASR (Whisper) fallback
   ASR_ENABLED: process.env.ASR_ENABLED === 'true' || process.env.ASR_ENABLED === '1',
   ASR_CONCURRENCY: num(process.env.ASR_CONCURRENCY, 1),
-  ASR_TIMEOUT_MS: num(process.env.ASR_TIMEOUT_MS, 1_800_000), // 30 min; no length cap on audio
+  ASR_TIMEOUT_MS: num(process.env.ASR_TIMEOUT_MS, 1_800_000), // 30 min; see ASR_MAX_DURATION_SEC
   ASR_LANG: process.env.ASR_LANG || 'auto',
+  // whisper.cpp's own default is min(4, hardware_concurrency), so this only matters on hosts
+  // with more than 4 cores. NOTE: availableParallelism() reads the CPU affinity mask, which
+  // does NOT see Docker's --cpus CFS quota — pin ASR_THREADS explicitly if you ever add one.
+  ASR_THREADS: num(process.env.ASR_THREADS, os.availableParallelism?.() ?? os.cpus().length),
+  // whisper.cpp defaults both of these to 5, i.e. beam search with 5 decoder passes. Its
+  // strategy is chosen as `beam_size > 1 ? BEAM_SEARCH : GREEDY`, so ASR_BEAM_SIZE=1 is the
+  // knob that actually buys greedy decoding — several times faster on a CPU-only box, for a
+  // modest accuracy cost. Set both back to 5 to restore upstream behaviour.
+  ASR_BEAM_SIZE: num(process.env.ASR_BEAM_SIZE, 1),
+  ASR_BEST_OF: num(process.env.ASR_BEST_OF, 1),
+  // Refuse ASR for audio this long *before* downloading it. Transcribing more than we can
+  // finish inside ASR_TIMEOUT_MS costs the full timeout and returns nothing, which is how a
+  // 26-minute video burned 30 minutes of CPU for zero output. 20 min is what large-v3-turbo
+  // on ~2 cores can plausibly manage in the default 30-minute timeout; the success path logs
+  // the measured realtime factor so this can be retuned from data.
+  ASR_MAX_DURATION_SEC: intOr(process.env.ASR_MAX_DURATION_SEC, 1200),
+  // Escape hatch: "true" restores the old behaviour of running ASR even when captions
+  // failed only because YouTube rate-limited us. Off by default — a 429 says nothing about
+  // whether captions exist, so the right move is to retry later, not to transcribe audio.
+  ASR_ON_RATE_LIMIT: bool(process.env.ASR_ON_RATE_LIMIT, false),
 
   // Direct audio upload (POST /audio/transcribe)
   UPLOAD_MAX_BYTES: num(process.env.UPLOAD_MAX_BYTES, 50 * 1024 * 1024),

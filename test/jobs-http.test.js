@@ -110,6 +110,8 @@ test('GET /jobs/:id reports a failed job with its message + statusCode', async (
   const id = String(nextId++);
   fakeJobs.set(id, {
     state: 'failed',
+    // An older worker's payload, with no `retryable` field — it must still
+    // default rather than come back undefined.
     failedReason: JSON.stringify({ message: 'boom', statusCode: 422 }),
     timestamp: 1_000,
     processedOn: 1_200,
@@ -120,9 +122,35 @@ test('GET /jobs/:id reports a failed job with its message + statusCode', async (
   assert.strictEqual(res.status, 200);
   const body = await res.json();
   assert.strictEqual(body.status, 'failed');
-  assert.deepStrictEqual(body.error, { message: 'boom', statusCode: 422 });
+  assert.deepStrictEqual(body.error, { message: 'boom', statusCode: 422, retryable: false });
   assert.strictEqual(body.queuedMs, 200);
   assert.strictEqual(body.processingMs, 700);
+});
+
+test('GET /jobs/:id surfaces a rate-limited job as a retryable 429 in the body', async () => {
+  // The HTTP status stays 200 — callers have to read error.statusCode to know
+  // this one is worth re-queueing rather than a permanently unusable video.
+  const id = String(nextId++);
+  fakeJobs.set(id, {
+    state: 'failed',
+    failedReason: JSON.stringify({ message: 'Rate-limited by YouTube', statusCode: 429, retryable: true }),
+    timestamp: 1_000,
+    processedOn: 1_200,
+    finishedOn: 1_900,
+  });
+
+  const res = await fetch(`${baseUrl}/jobs/${id}`);
+  assert.strictEqual(res.status, 200);
+  const body = await res.json();
+  assert.deepStrictEqual(body.error, { message: 'Rate-limited by YouTube', statusCode: 429, retryable: true });
+});
+
+test('GET /jobs/:id keeps a non-JSON failedReason readable', async () => {
+  const id = String(nextId++);
+  fakeJobs.set(id, { state: 'failed', failedReason: 'worker crashed', timestamp: 1_000, processedOn: 1_200, finishedOn: 1_900 });
+  const res = await fetch(`${baseUrl}/jobs/${id}`);
+  const body = await res.json();
+  assert.deepStrictEqual(body.error, { message: 'worker crashed', statusCode: 500, retryable: false });
 });
 
 test('GET /jobs/:id reports a still-queued job with a live queuedMs and no processingMs yet', async () => {
