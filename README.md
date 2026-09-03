@@ -501,13 +501,52 @@ ASR_ENABLED=true                              # matches the image's bundled whis
 HOST_PORT=4021
 ```
 
-### 3. Build and start
+### 3. Get the image running
+
+`docker-compose.yml`'s `image:` points at `ghcr.io/rosdyana/ch-media` — an image
+`.github/workflows/docker-publish.yml` already builds on every push to `main` (or on
+demand via **Actions → Build and publish Docker image → Run workflow**). Pulling it is
+the recommended path on this host specifically because it also runs other web
+services: whisper.cpp's from-source compile takes real CPU and RAM, and pulling a
+prebuilt image means this Debian box never pays that cost.
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps             # api, worker, redis should all be "healthy"/"running"
+curl http://127.0.0.1:4021/health
+```
+
+The package defaults to **private** on its first push, regardless of the repo being
+public — GitHub does not link the two automatically. Until you flip that, `docker
+compose pull` will fail with a 401/403. One-time fix, pick one:
+
+- Make the package public: on GitHub, the repo's sidebar → **Packages** → `ch-media` →
+  **Package settings** → **Change visibility** → **Public**. Simplest; no credentials
+  needed on the server afterwards.
+- Or keep it private and authenticate this host once:
+  `echo "$GHCR_PAT" | docker login ghcr.io -u rosdyana --password-stdin`, using a
+  classic PAT with the `read:packages` scope.
+
+To roll back, pin a specific build instead of always tracking `latest` — every
+workflow run also tags the image with its short commit sha (visible in the run's
+summary, or `git rev-parse --short HEAD` for a commit that's been pushed):
+
+```bash
+# .env
+IMAGE_TAG=abc1234
+```
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Prefer building on this host instead (e.g. no GitHub Actions access, or iterating
+locally)? `build: .` is still there in `docker-compose.yml` for exactly that:
 
 ```bash
 docker compose build          # builds whisper.cpp + downloads the ggml model (~large-v3-turbo by default)
 docker compose up -d
-docker compose ps             # api, worker, redis should all be "healthy"/"running"
-curl http://127.0.0.1:4021/health
 ```
 
 `restart: unless-stopped` in `docker-compose.yml` means all three containers come back
@@ -519,14 +558,23 @@ Useful day-to-day commands:
 
 ```bash
 docker compose logs -f api worker   # tail both processes' logs
-docker compose pull && docker compose up -d --build   # deploy new code (after a git pull)
+docker compose pull && docker compose up -d         # deploy new code that's already been pushed to main
 docker compose down                 # stop everything (add -v to also drop the redis-data volume)
 ```
 
+whisper.cpp (unpinned upstream `master`) and yt-dlp (`.../latest/download/...`) are
+both fetched inside cached Docker layers, in the image *and* in the GitHub Actions
+build alike — a plain rebuild reuses those layers rather than re-fetching either.
+Trigger **Run workflow** with **Bypass the build cache** checked when you actually
+want the current whisper.cpp/yt-dlp baked in.
+
 To use a smaller/faster-to-build Whisper model than the `large-v3-turbo` default,
-rebuild with a different build arg (see `scripts/install-deps.sh --model` for valid
-names, e.g. `base.en`, `small.en`) **and** set the same name in `.env` — `WHISPER_MODEL_PATH`
-inside the container is derived from `.env`'s `WHISPER_MODEL`, so the two must match:
+it needs a different build arg — the GHCR image the workflow pushes always uses the
+Dockerfile's default, so this only applies if you're building (Option B above), or if
+you edit `docker-publish.yml`'s build step to add `build-args: WHISPER_MODEL=base.en`
+(see `scripts/install-deps.sh --model` for valid names, e.g. `base.en`, `small.en`).
+Either way, also set the same name in `.env` — `WHISPER_MODEL_PATH` inside the
+container is derived from `.env`'s `WHISPER_MODEL`, so the two must match:
 
 ```bash
 docker compose build --build-arg WHISPER_MODEL=base.en

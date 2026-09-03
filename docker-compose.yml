@@ -3,8 +3,15 @@ name: ch-media-service
 # Shared by both the api and worker containers — same image, same env, same
 # network. Only the published port and the process command differ.
 x-app: &app
+  # `build: .` keeps `docker compose build` working for local dev. Production
+  # (this host runs other web services too) should never trigger that build —
+  # `docker compose pull` fetches the image the docker-publish.yml GitHub
+  # Actions workflow already built, and `up`/`up -d` uses whatever image is
+  # present without rebuilding it. Pin IMAGE_TAG to a short commit sha (see
+  # the workflow's run summary, or `git rev-parse --short HEAD` on a commit
+  # that's been pushed) to roll back instead of always tracking `latest`.
   build: .
-  image: ch-media-service:latest
+  image: ghcr.io/rosdyana/ch-media:${IMAGE_TAG:-latest}
   restart: unless-stopped
   env_file:
     - .env
