@@ -51,6 +51,32 @@ function langMatches(pref, langCode) {
   return l === p || l.startsWith(`${p}-`);
 }
 
+const YOUTUBE_HOST = /^(?:www\.|m\.|music\.)?youtube(?:-nocookie)?\.com$/;
+
+/**
+ * The 11-char video id behind a YouTube URL, or null when it isn't a
+ * single-video URL we recognise (a playlist, a channel, a non-YouTube host).
+ * `youtu.be/x`, `watch?v=x`, `/shorts/x` and `/embed/x` are all the same video,
+ * which is what lets the queue dedupe on it instead of on the raw URL string.
+ */
+function youtubeVideoId(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  let id = null;
+  if (host === 'youtu.be') {
+    id = u.pathname.split('/')[1];
+  } else if (YOUTUBE_HOST.test(host)) {
+    if (u.pathname === '/watch') id = u.searchParams.get('v');
+    else id = /^\/(?:shorts|embed|live|v)\/([^/]+)/.exec(u.pathname)?.[1];
+  }
+  return id && /^[\w-]{11}$/.test(id) ? id : null;
+}
+
 /** Pick the best caption file by language preference. */
 function pickBestCaption(files) {
   for (const pref of cfg.SUB_LANGS) {
@@ -500,6 +526,7 @@ async function transcribeYoutube(url) {
 module.exports = {
   searchYoutube,
   transcribeYoutube,
+  youtubeVideoId,
   parseJson3,
   pickBestCaption,
   langMatches,

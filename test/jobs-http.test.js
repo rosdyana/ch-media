@@ -36,6 +36,24 @@ require.cache[queuePath] = {
       });
       return id;
     },
+    // Mirrors the real one's contract: an existing id is returned as-is (deduped)
+    // with its state. The failed-job replacement path is covered in queue.test.js.
+    enqueueDedupedJob: async (name, data, jobId, { force = false } = {}) => {
+      const existing = fakeJobs.get(jobId);
+      if (existing && !(force && existing.state === 'completed')) {
+        return { jobId, state: existing.state, deduped: true };
+      }
+      fakeJobs.set(jobId, {
+        name,
+        data,
+        state: 'completed',
+        returnvalue: { url: data.url, text: 'transcript' },
+        timestamp: 1_000,
+        processedOn: 1_500,
+        finishedOn: 2_000,
+      });
+      return { jobId, state: null, deduped: false };
+    },
     getJob: async (id) => {
       const job = fakeJobs.get(id);
       if (!job) return null;
@@ -78,6 +96,50 @@ test('POST /youtube/transcribe enqueues a job and returns 202', async () => {
   const body = await res.json();
   assert.strictEqual(body.status, 'queued');
   assert.ok(body.jobId);
+});
+
+const postTranscribe = (url, extra = {}) =>
+  fetch(`${baseUrl}/youtube/transcribe`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url, ...extra }),
+  }).then(async (res) => ({ status: res.status, body: await res.json() }));
+
+test('POST /youtube/transcribe force:true re-runs a cached video, but only for a literal true', async () => {
+  const url = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+  await postTranscribe(url); // creates the job; the fake finishes it immediately
+
+  const truthy = await postTranscribe(url, { force: 'yes' });
+  assert.deepStrictEqual(truthy.body, { jobId: 'yt-aaaaaaaaaaa', status: 'done', deduped: true });
+
+  const forced = await postTranscribe(url, { force: true });
+  assert.strictEqual(forced.status, 202);
+  assert.deepStrictEqual(forced.body, { jobId: 'yt-aaaaaaaaaaa', status: 'queued' });
+});
+
+test('POST /youtube/transcribe dedupes the same video across URL forms', async () => {
+  const first = await postTranscribe('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.strictEqual(first.status, 202);
+  assert.strictEqual(first.body.jobId, 'yt-dQw4w9WgXcQ');
+  assert.deepStrictEqual(first.body, { jobId: 'yt-dQw4w9WgXcQ', status: 'queued' });
+
+  // Still queued -> the second caller joins the same job.
+  fakeJobs.get('yt-dQw4w9WgXcQ').state = 'waiting';
+  const joined = await postTranscribe('https://youtu.be/dQw4w9WgXcQ?t=30');
+  assert.deepStrictEqual(joined.body, { jobId: 'yt-dQw4w9WgXcQ', status: 'queued', deduped: true });
+
+  // Once finished, a repeat reports the cached job as done.
+  fakeJobs.get('yt-dQw4w9WgXcQ').state = 'completed';
+  const cached = await postTranscribe('https://www.youtube.com/shorts/dQw4w9WgXcQ');
+  assert.strictEqual(cached.status, 202);
+  assert.deepStrictEqual(cached.body, { jobId: 'yt-dQw4w9WgXcQ', status: 'done', deduped: true });
+});
+
+test('POST /youtube/transcribe enqueues a URL with no video id fresh every time', async () => {
+  const a = await postTranscribe('https://www.youtube.com/playlist?list=PL123');
+  const b = await postTranscribe('https://www.youtube.com/playlist?list=PL123');
+  assert.notStrictEqual(a.body.jobId, b.body.jobId);
+  assert.strictEqual(b.body.deduped, undefined);
 });
 
 test('POST /youtube/transcribe still 400s on a missing url before touching the queue', async () => {

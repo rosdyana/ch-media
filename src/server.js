@@ -8,8 +8,8 @@ const express = require('express');
 const cfg = require('./config');
 const { MediaError } = require('./ytdlp');
 const { runUpload } = require('./upload');
-const { searchYoutube } = require('./youtube');
-const { enqueueJob, getJob, JOB_NAMES } = require('./queue');
+const { searchYoutube, youtubeVideoId } = require('./youtube');
+const { enqueueJob, enqueueDedupedJob, getJob, JOB_NAMES } = require('./queue');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -58,18 +58,44 @@ app.post(
   }),
 );
 
+// BullMQ job state -> the simplified status this API reports.
+const JOB_STATUS_MAP = {
+  waiting: 'queued',
+  delayed: 'queued',
+  'waiting-children': 'queued',
+  prioritized: 'queued',
+  active: 'processing',
+  completed: 'done',
+  failed: 'failed',
+};
+
 // POST /youtube/transcribe { url } — enqueues a job, returns 202 + jobId.
 // Poll GET /jobs/:id for the transcript result.
+//
+// Keyed by video id, so resubmitting the same video (in any URL form) joins the
+// in-flight job or reuses the finished one instead of re-running yt-dlp/Whisper.
+// `deduped: true` + the job's current status tell the caller that happened; the
+// HTTP status stays 202 either way. A URL with no recognisable video id is
+// enqueued as before, uncached. `force: true` discards a finished cached result
+// and re-runs the video (an in-flight job is still joined, not duplicated).
 app.post(
   '/youtube/transcribe',
   auth,
   handle(async (req, res) => {
-    const { url } = req.body || {};
+    const { url, force } = req.body || {};
     if (!url || typeof url !== 'string') {
       throw new MediaError('url is required', { statusCode: 400 });
     }
-    const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url });
-    res.status(202).json({ jobId, status: 'queued' });
+    const videoId = youtubeVideoId(url);
+    if (!videoId) {
+      const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url });
+      return res.status(202).json({ jobId, status: 'queued' });
+    }
+    const { jobId, state, deduped } = await enqueueDedupedJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url }, `yt-${videoId}`, {
+      force: force === true,
+    });
+    const status = deduped ? JOB_STATUS_MAP[state] || 'queued' : 'queued';
+    res.status(202).json(deduped ? { jobId, status, deduped } : { jobId, status });
   }),
 );
 
@@ -106,17 +132,6 @@ app.post(
     }
   }),
 );
-
-// BullMQ job state -> the simplified status this API reports.
-const JOB_STATUS_MAP = {
-  waiting: 'queued',
-  delayed: 'queued',
-  'waiting-children': 'queued',
-  prioritized: 'queued',
-  active: 'processing',
-  completed: 'done',
-  failed: 'failed',
-};
 
 // GET /jobs/:id — poll the status/result of a previously submitted job.
 app.get(

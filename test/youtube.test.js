@@ -12,10 +12,44 @@ const {
   captionArgs,
   toWhisperLang,
   asrLangHint,
+  youtubeVideoId,
 } = require('../src/youtube');
 const ytdlp = require('../src/ytdlp');
 const whisper = require('../src/whisper');
 const cfg = require('../src/config');
+
+test('youtubeVideoId maps every single-video URL form to the same id', () => {
+  const id = 'dQw4w9WgXcQ';
+  for (const url of [
+    `https://www.youtube.com/watch?v=${id}`,
+    `https://youtube.com/watch?v=${id}&list=PL123&t=42s`,
+    `https://m.youtube.com/watch?v=${id}`,
+    `https://music.youtube.com/watch?v=${id}`,
+    `https://youtu.be/${id}?si=abc`,
+    `https://www.youtube.com/shorts/${id}`,
+    `https://www.youtube.com/embed/${id}`,
+    `https://www.youtube.com/live/${id}?feature=share`,
+    `https://www.youtube-nocookie.com/embed/${id}`,
+  ]) {
+    assert.strictEqual(youtubeVideoId(url), id, url);
+  }
+});
+
+test('youtubeVideoId returns null for anything that is not one recognisable video', () => {
+  for (const url of [
+    'https://www.youtube.com/playlist?list=PL123',
+    'https://www.youtube.com/@somechannel',
+    'https://www.youtube.com/watch',
+    'https://www.youtube.com/watch?v=tooshort',
+    'https://notyoutube.com/watch?v=dQw4w9WgXcQ',
+    'https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ',
+    'dQw4w9WgXcQ',
+    'not a url',
+    '',
+  ]) {
+    assert.strictEqual(youtubeVideoId(url), null, url);
+  }
+});
 
 test('parseJson3 joins segments and skips newline-only events', () => {
   const json = JSON.stringify({

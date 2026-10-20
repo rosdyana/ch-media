@@ -31,6 +31,13 @@ x-app: &app
     FFMPEG_PATH: /usr/bin/ffmpeg
     WHISPER_CPP_PATH: /usr/local/bin/whisper-cli
     WHISPER_MODEL_PATH: /opt/whisper-models/ggml-${WHISPER_MODEL:-large-v3-turbo}.bin
+  # yt-dlp cookies (README → Docker). Create ./cookies.txt on the host BEFORE
+  # `up` — if it's missing, Docker creates a *directory* by that name. No `:ro`:
+  # yt-dlp rewrites the file on exit and fails the whole call if it can't, so it
+  # must be writable by the container's `chmedia` user (chown it to that uid).
+  # Set here, not per service, so api and worker can't drift apart.
+  volumes:
+    - ./cookies.txt:/app/cookies.txt
   depends_on:
     redis:
       condition: service_healthy

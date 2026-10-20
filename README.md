@@ -102,6 +102,19 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
   `ytsearch`) — synchronous, not queued.
 - `POST /youtube/transcribe` `{ url }` → `202 { jobId, status: "queued" }`
   Job result: `{ url, title, text, language, source, meta }`
+  - **Deduplicated by video.** The job id is `yt-<videoId>`, so `watch?v=`, `youtu.be/`,
+    `/shorts/`, `/embed/` and `/live/` URLs for one video all map to the same job. Submitting
+    a video that is already queued/processing **joins** that job; one that already finished
+    is a **cache hit** — the stored result is served until it is evicted after
+    `JOB_RETENTION_MS` (24h by default) and nothing is re-downloaded or re-transcribed. In
+    both cases the response is still `202`, with the job's current status and
+    `deduped: true`: `{ jobId, status: "done", deduped: true }`. A **failed** job is not
+    cached — resubmitting removes it and runs the video again. A URL with no single video id
+    (a playlist, a channel) is enqueued fresh every time. Note `result.url` is the URL of
+    whichever request created the job.
+  - **`force: true`** (optional body field, literal boolean only) discards a finished cached
+    result and re-runs the video — e.g. after updating yt-dlp. A job that is still
+    queued/processing is joined as usual rather than run twice.
   - `source` = `"captions"` or `"asr"`.
   - Prefers yt-dlp captions. The metadata step decides which caption language to ask for
     (see [Requirements](#requirements-host--image)), so the caption fetch is **one** request
@@ -599,13 +612,22 @@ and point `YTDLP_COOKIES` at it — add to both the `api` and `worker` service b
 
 ```yaml
     volumes:
-      - ./cookies.txt:/app/cookies.txt:ro
+      - ./cookies.txt:/app/cookies.txt
 ```
 
 ```bash
 # .env
 YTDLP_COOKIES=/app/cookies.txt
 ```
+
+Three things make this fail if skipped:
+
+- Create `cookies.txt` next to `docker-compose.yml` **before** `docker compose up`. If it's
+  missing, Docker creates an empty *directory* with that name and yt-dlp fails on it.
+- Don't add `:ro`. yt-dlp rewrites the cookie file when it exits, so on a read-only mount every
+  call fails with `OSError: [Errno 30] Read-only file system` even when the download succeeded.
+- The containers run as `chmedia`, which must be able to write the file. On Linux, `chown` it to
+  that user's uid (`docker compose exec api id chmedia` prints it).
 
 ### 4. Reverse proxy with Caddy
 
