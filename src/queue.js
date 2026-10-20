@@ -56,9 +56,9 @@ async function enqueueJob(name, data) {
 /**
  * Enqueue under a deterministic job id so the same work is only done once:
  * BullMQ ignores an add() whose id already exists, so a repeat submission while
- * the job is queued/active joins it, and one after it completed is a cache hit
- * served from the stored return value until removeOnComplete evicts it
- * (JOB_RETENTION_MS). A *failed* job is not kept — a 429 or a since-fixed
+ * the job is queued/active joins it, and one after it completed is served from
+ * the stored return value until removeOnComplete evicts it (JOB_RETENTION_MS —
+ * the long-lived cache is src/cache.js, checked before this). A *failed* job is not kept — a 429 or a since-fixed
  * yt-dlp problem shouldn't be replayed for a day — so it's removed and re-run.
  * `force` drops a *completed* result the same way (e.g. after a yt-dlp update);
  * an in-flight job is still joined, so forcing can't start a second concurrent run.

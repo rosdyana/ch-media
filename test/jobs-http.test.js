@@ -70,6 +70,27 @@ require.cache[queuePath] = {
   },
 };
 
+// Same swap for the long-lived transcript cache (src/cache.js, normally Redis).
+const cachePath = require.resolve('../src/cache');
+const fakeCache = new Map();
+let enqueueCalls = 0;
+const realEnqueue = require.cache[queuePath].exports.enqueueDedupedJob;
+require.cache[queuePath].exports.enqueueDedupedJob = (...args) => {
+  enqueueCalls++;
+  return realEnqueue(...args);
+};
+require.cache[cachePath] = {
+  id: cachePath,
+  filename: cachePath,
+  loaded: true,
+  exports: {
+    hasCachedTranscript: async (videoId) => fakeCache.has(videoId),
+    getCachedTranscript: async (videoId) => fakeCache.get(videoId) ?? null,
+    setCachedTranscript: async (videoId, result) => void fakeCache.set(videoId, result),
+    deleteCachedTranscript: async (videoId) => void fakeCache.delete(videoId),
+  },
+};
+
 const app = require('../src/server');
 
 let server;
@@ -133,6 +154,42 @@ test('POST /youtube/transcribe dedupes the same video across URL forms', async (
   const cached = await postTranscribe('https://www.youtube.com/shorts/dQw4w9WgXcQ');
   assert.strictEqual(cached.status, 202);
   assert.deepStrictEqual(cached.body, { jobId: 'yt-dQw4w9WgXcQ', status: 'done', deduped: true });
+});
+
+test('POST /youtube/transcribe serves a cached transcript without touching the queue', async () => {
+  fakeCache.set('ccccccccccc', { url: 'https://youtu.be/ccccccccccc', text: 'cached transcript' });
+  const before = enqueueCalls;
+
+  const hit = await postTranscribe('https://www.youtube.com/watch?v=ccccccccccc');
+  assert.strictEqual(hit.status, 202);
+  assert.deepStrictEqual(hit.body, { jobId: 'yt-ccccccccccc', status: 'done', deduped: true });
+  assert.strictEqual(enqueueCalls, before);
+
+  // The returned id is pollable even though no BullMQ job exists for it any more.
+  const poll = await fetch(`${baseUrl}/jobs/${hit.body.jobId}`);
+  assert.strictEqual(poll.status, 200);
+  assert.deepStrictEqual(await poll.json(), {
+    id: 'yt-ccccccccccc',
+    status: 'done',
+    queuedMs: null,
+    processingMs: null,
+    result: { url: 'https://youtu.be/ccccccccccc', text: 'cached transcript' },
+  });
+});
+
+test('POST /youtube/transcribe force:true drops the cached transcript and re-runs', async () => {
+  fakeCache.set('ddddddddddd', { text: 'stale' });
+  const before = enqueueCalls;
+
+  const forced = await postTranscribe('https://youtu.be/ddddddddddd', { force: true });
+  assert.deepStrictEqual(forced.body, { jobId: 'yt-ddddddddddd', status: 'queued' });
+  assert.strictEqual(enqueueCalls, before + 1);
+  assert.strictEqual(fakeCache.has('ddddddddddd'), false);
+});
+
+test('GET /jobs/yt-<id> still 404s when there is neither a job nor a cached transcript', async () => {
+  const res = await fetch(`${baseUrl}/jobs/yt-eeeeeeeeeee`);
+  assert.strictEqual(res.status, 404);
 });
 
 test('POST /youtube/transcribe enqueues a URL with no video id fresh every time', async () => {

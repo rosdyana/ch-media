@@ -10,14 +10,19 @@ const { Worker } = require('bullmq');
 const cfg = require('./config');
 const { getConnection, QUEUE_NAME, JOB_NAMES } = require('./queue');
 const { MediaError } = require('./ytdlp');
-const { transcribeYoutube } = require('./youtube');
+const { transcribeYoutube, youtubeVideoId } = require('./youtube');
 const { transcribeUploadedAudio } = require('./audio');
+const { setCachedTranscript } = require('./cache');
 
 async function processJob(job) {
   switch (job.name) {
     case JOB_NAMES.YOUTUBE_TRANSCRIBE: {
       const { url } = job.data;
-      return transcribeYoutube(url);
+      const result = await transcribeYoutube(url);
+      // Long-lived, outside BullMQ's 24h job retention — see src/cache.js.
+      const videoId = youtubeVideoId(url);
+      if (videoId) await setCachedTranscript(videoId, result);
+      return result;
     }
     case JOB_NAMES.AUDIO_TRANSCRIBE: {
       const { inputPath, tmpDir } = job.data;

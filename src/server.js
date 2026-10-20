@@ -10,6 +10,7 @@ const { MediaError } = require('./ytdlp');
 const { runUpload } = require('./upload');
 const { searchYoutube, youtubeVideoId } = require('./youtube');
 const { enqueueJob, enqueueDedupedJob, getJob, JOB_NAMES } = require('./queue');
+const { hasCachedTranscript, getCachedTranscript, deleteCachedTranscript } = require('./cache');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -91,11 +92,19 @@ app.post(
       const jobId = await enqueueJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url });
       return res.status(202).json({ jobId, status: 'queued' });
     }
-    const { jobId, state, deduped } = await enqueueDedupedJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url }, `yt-${videoId}`, {
-      force: force === true,
-    });
-    const status = deduped ? JOB_STATUS_MAP[state] || 'queued' : 'queued';
-    res.status(202).json(deduped ? { jobId, status, deduped } : { jobId, status });
+    const jobId = `yt-${videoId}`;
+    // Long-lived cache first (src/cache.js): it outlives the job itself, so a hit
+    // needs no job at all — GET /jobs/:id serves it by this same id. A forced
+    // re-run drops it up front, so a failed re-run can't leave a stale "done"
+    // here while the job reports "failed".
+    if (force === true) {
+      await deleteCachedTranscript(videoId);
+    } else if (await hasCachedTranscript(videoId)) {
+      return res.status(202).json({ jobId, status: 'done', deduped: true });
+    }
+    const queued = await enqueueDedupedJob(JOB_NAMES.YOUTUBE_TRANSCRIBE, { url }, jobId, { force: force === true });
+    const status = queued.deduped ? JOB_STATUS_MAP[queued.state] || 'queued' : 'queued';
+    res.status(202).json(queued.deduped ? { jobId, status, deduped: true } : { jobId, status });
   }),
 );
 
@@ -139,7 +148,14 @@ app.get(
   auth,
   handle(async (req, res) => {
     const job = await getJob(req.params.id);
-    if (!job) throw new MediaError('Job not found', { statusCode: 404 });
+    if (!job) {
+      // A YouTube job's BullMQ record is gone after JOB_RETENTION_MS, but its
+      // result outlives it in the transcript cache — keep the id pollable.
+      const videoId = /^yt-([\w-]{11})$/.exec(req.params.id)?.[1];
+      const cached = videoId && (await getCachedTranscript(videoId));
+      if (cached) return res.json({ id: req.params.id, status: 'done', queuedMs: null, processingMs: null, result: cached });
+      throw new MediaError('Job not found', { statusCode: 404 });
+    }
     const state = await job.getState();
     const status = JOB_STATUS_MAP[state] || 'queued';
 

@@ -126,4 +126,9 @@ module.exports = {
   JOB_ATTEMPTS: num(process.env.JOB_ATTEMPTS, 1),
   // How long finished jobs stick around in Redis before BullMQ evicts them.
   JOB_RETENTION_MS: num(process.env.JOB_RETENTION_MS, 24 * 60 * 60 * 1000),
+  // How long a finished YouTube transcript is served from its own Redis key
+  // (src/cache.js) instead of being re-run. Separate from JOB_RETENTION_MS on
+  // purpose: BullMQ trims the whole completed set by whichever job finishes, so a
+  // long age there would keep every job's result that long. 0 disables the cache.
+  TRANSCRIPT_CACHE_TTL_SEC: intOr(process.env.TRANSCRIPT_CACHE_TTL_SEC, 365 * 24 * 60 * 60),
 };

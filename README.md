@@ -105,15 +105,23 @@ stays synchronous — it's a fast metadata lookup, not worth a queue round-trip.
   - **Deduplicated by video.** The job id is `yt-<videoId>`, so `watch?v=`, `youtu.be/`,
     `/shorts/`, `/embed/` and `/live/` URLs for one video all map to the same job. Submitting
     a video that is already queued/processing **joins** that job; one that already finished
-    is a **cache hit** — the stored result is served until it is evicted after
-    `JOB_RETENTION_MS` (24h by default) and nothing is re-downloaded or re-transcribed. In
-    both cases the response is still `202`, with the job's current status and
-    `deduped: true`: `{ jobId, status: "done", deduped: true }`. A **failed** job is not
-    cached — resubmitting removes it and runs the video again. A URL with no single video id
-    (a playlist, a channel) is enqueued fresh every time. Note `result.url` is the URL of
+    is a **cache hit** and nothing is re-downloaded or re-transcribed. In both cases the
+    response is still `202`, with the job's current status and `deduped: true`:
+    `{ jobId, status: "done", deduped: true }`. A **failed** job is not cached —
+    resubmitting removes it and runs the video again. A URL with no single video id (a
+    playlist, a channel) is enqueued fresh every time. Note `result.url` is the URL of
     whichever request created the job.
-  - **`force: true`** (optional body field, literal boolean only) discards a finished cached
-    result and re-runs the video — e.g. after updating yt-dlp. A job that is still
+  - **Finished transcripts are cached for 1 year** (`TRANSCRIPT_CACHE_TTL_SEC`, default
+    `31536000`; `0` disables the cache). They live in their own Redis key per video
+    (`ch-media:yt-cache:<videoId>`, written by the worker) rather than in the job record, so
+    `JOB_RETENTION_MS` stays at 24h — BullMQ trims its whole completed set by whichever job
+    just finished, so a year-long retention there would keep every job's result (uploaded-audio
+    transcripts included) for a year. `GET /jobs/yt-<videoId>` keeps working after the job
+    record is evicted: it falls back to the cache, with `queuedMs`/`processingMs` `null`.
+    Size the Redis volume for it — up to `YTDLP_MAX_TRANSCRIPT_CHARS` (100k) per video — and
+    note the bundled compose file sets no `maxmemory`, so entries are never evicted early.
+  - **`force: true`** (optional body field, literal boolean only) discards the cached result
+    and re-runs the video — e.g. after updating yt-dlp. A job that is still
     queued/processing is joined as usual rather than run twice.
   - `source` = `"captions"` or `"asr"`.
   - Prefers yt-dlp captions. The metadata step decides which caption language to ask for
