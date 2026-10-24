@@ -89,7 +89,11 @@ if [ "$WITH_ASR" -eq 1 ]; then
     git clone https://github.com/ggml-org/whisper.cpp.git "${WHISPER_DIR}"
   fi
 
-  cmake -B "${WHISPER_DIR}/build" -S "${WHISPER_DIR}"
+  # Portable baseline rather than whisper.cpp's default -march=native: a GCP E2 VM can
+  # land on a different CPU platform after a stop/start, and a native build then dies
+  # with SIGILL. Same flags as the Dockerfile's WHISPER_CMAKE_FLAGS.
+  cmake -B "${WHISPER_DIR}/build" -S "${WHISPER_DIR}" \
+    -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
   cmake --build "${WHISPER_DIR}/build" -j"$(nproc)" --config Release
 
   MODEL_FILE="${WHISPER_DIR}/models/ggml-${WHISPER_MODEL}.bin"

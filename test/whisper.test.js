@@ -139,6 +139,50 @@ test('transcribeAudio names the OOM killer when something else killed the proces
   );
 });
 
+test('transcribeAudio names a CPU/build mismatch, not the OOM killer, on SIGILL', async (t) => {
+  withWhisperCfg(t, { ASR_MAX_DURATION_SEC: 0 });
+  t.mock.method(ytdlp, 'execRaw', async () => {
+    const err = new Error('Command failed');
+    err.killed = false;
+    err.signal = 'SIGILL';
+    throw err;
+  });
+  const { transcribeAudio } = loadFreshWhisper();
+
+  await assert.rejects(
+    () => transcribeAudio('/tmp/a.wav', '/tmp', { durationSec: 60 }),
+    (err) => {
+      assert.match(err.message, /SIGILL/);
+      assert.match(err.message, /GGML_NATIVE=OFF/);
+      assert.ok(!/OOM/.test(err.message), 'more memory would not help an illegal instruction');
+      assert.strictEqual(err.retryable, false);
+      return true;
+    },
+  );
+});
+
+test('transcribeAudio reports other external signals without guessing at OOM', async (t) => {
+  withWhisperCfg(t, { ASR_MAX_DURATION_SEC: 0 });
+  t.mock.method(ytdlp, 'execRaw', async () => {
+    const err = new Error('Command failed');
+    err.killed = false;
+    err.signal = 'SIGSEGV';
+    err.stderr = 'ggml_abort: something broke';
+    throw err;
+  });
+  const { transcribeAudio } = loadFreshWhisper();
+
+  await assert.rejects(
+    () => transcribeAudio('/tmp/a.wav', '/tmp', { durationSec: 60 }),
+    (err) => {
+      assert.match(err.message, /killed by SIGSEGV/);
+      assert.match(err.message, /something broke/);
+      assert.ok(!/OOM/.test(err.message));
+      return true;
+    },
+  );
+});
+
 test('transcribeAudio truncates a generic whisper failure but keeps the real error', async (t) => {
   withWhisperCfg(t, { ASR_MAX_DURATION_SEC: 0 });
   t.mock.method(ytdlp, 'execRaw', async () => {

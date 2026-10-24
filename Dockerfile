@@ -4,10 +4,17 @@
 # `docker build --build-arg WHISPER_MODEL=base.en .` for a smaller/faster build.
 ARG WHISPER_MODEL=large-v3-turbo
 ARG NODE_IMAGE=node:20-bookworm-slim
+# whisper.cpp defaults to GGML_NATIVE=ON, i.e. -march=native for whatever CPU runs
+# the build. The image is built on GitHub Actions runners (AVX-512) and run on other
+# hosts, where those instructions crash whisper-cli with SIGILL. Target a portable
+# x86-64 baseline instead: AVX2/FMA/F16C exist on every x86 platform GCP offers.
+# Override for a known host, e.g. --build-arg WHISPER_CMAKE_FLAGS="-DGGML_NATIVE=ON".
+ARG WHISPER_CMAKE_FLAGS="-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
 
 # ── whisper.cpp (built from source, statically linked) ─────────────────────────
 FROM ${NODE_IMAGE} AS whisper-builder
 ARG WHISPER_MODEL
+ARG WHISPER_CMAKE_FLAGS
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
@@ -15,7 +22,7 @@ RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git /opt/whisper
 WORKDIR /opt/whisper.cpp
 # BUILD_SHARED_LIBS=OFF keeps whisper-cli self-contained so the runtime stage
 # only needs to copy the one binary (no libwhisper.so/libggml*.so to chase).
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF ${WHISPER_CMAKE_FLAGS} \
     && cmake --build build -j"$(nproc)" --config Release
 RUN bash ./models/download-ggml-model.sh "${WHISPER_MODEL}"
 

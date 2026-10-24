@@ -119,13 +119,32 @@ function describeWhisperFailure(err, { audioNote, threads }) {
       { statusCode: 422, cause: err },
     );
   }
-  // A signal we didn't send, on a small container running a large model: this is
+  // SIGILL is the CPU rejecting an instruction: the binary was built for a newer CPU
+  // (whisper.cpp's default -march=native, built on another machine). Deterministic,
+  // so no amount of retrying, memory or timeout helps — only a rebuild.
+  if (err?.signal === 'SIGILL') {
+    return new MediaError(
+      'whisper crashed with SIGILL (illegal instruction): this whisper-cli was built for a CPU ' +
+        'with instructions this host lacks (e.g. AVX-512). Rebuild it with -DGGML_NATIVE=OFF ' +
+        '(see WHISPER_CMAKE_FLAGS in the Dockerfile) or on this host.',
+      { cause: err },
+    );
+  }
+  // SIGKILL we didn't send, on a small container running a large model: this is
   // the OOM killer far more often than anything else, and "raise the timeout"
   // would be exactly the wrong fix.
+  if (isExternalKill(err) && err.signal === 'SIGKILL') {
+    return new MediaError(
+      `whisper was killed by SIGKILL without hitting ASR_TIMEOUT_MS (${audioNote}) — ` +
+        `likely the OOM killer; ggml-large-v3-turbo needs roughly 1.5 GB RSS`,
+      { cause: err },
+    );
+  }
+  // Any other signal we didn't send (SIGSEGV, SIGABRT, SIGTERM from `docker stop`, ...).
   if (isExternalKill(err)) {
     return new MediaError(
-      `whisper was killed by ${err.signal} without hitting ASR_TIMEOUT_MS (${audioNote}) — ` +
-        `likely the OOM killer; ggml-large-v3-turbo needs roughly 1.5 GB RSS`,
+      `whisper was killed by ${err.signal} without hitting ASR_TIMEOUT_MS (${audioNote}): ` +
+        tailStderr(err.stderr || err.message),
       { cause: err },
     );
   }
