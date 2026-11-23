@@ -5,7 +5,7 @@
   "description": "Market Intelligence media worker — owns yt-dlp + ffmpeg + whisper.cpp behind an internal HTTP API so CHBackend (load-balanced) ships no media binaries.",
   "type": "commonjs",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "main": "src/server.js",
   "scripts": {

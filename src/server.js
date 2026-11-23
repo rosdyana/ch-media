@@ -6,7 +6,7 @@
 const fsp = require('fs/promises');
 const express = require('express');
 const cfg = require('./config');
-const { MediaError } = require('./ytdlp');
+const { MediaError, checkJsRuntime } = require('./ytdlp');
 const { runUpload } = require('./upload');
 const { searchYoutube, youtubeVideoId } = require('./youtube');
 const { enqueueJob, enqueueDedupedJob, getJob, JOB_NAMES } = require('./queue');
@@ -191,6 +191,7 @@ if (require.main === module) {
   const server = app.listen(cfg.PORT, cfg.HOST, () => {
     console.log(`[media] CH Media Service listening on http://${cfg.HOST}:${cfg.PORT} (ASR ${cfg.ASR_ENABLED ? 'on' : 'off'})`);
   });
+  checkJsRuntime();
 
   const shutdown = (signal) => {
     console.log(`[media] ${signal} received, shutting down`);

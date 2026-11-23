@@ -3,7 +3,11 @@
 # Model baked into the image at build time — override with
 # `docker build --build-arg WHISPER_MODEL=base.en .` for a smaller/faster build.
 ARG WHISPER_MODEL=large-v3-turbo
-ARG NODE_IMAGE=node:20-bookworm-slim
+# Node is also yt-dlp's JS runtime for YouTube's player challenge (we pass
+# --js-runtimes node). yt-dlp 2026.10 reports Node 20 as "unsupported" and
+# silently runs without it, so every video fell back to degraded clients that
+# YouTube answers with "This video is not available". Node 22 is verified.
+ARG NODE_IMAGE=node:22-bookworm-slim
 # whisper.cpp defaults to GGML_NATIVE=ON, i.e. -march=native for whatever CPU runs
 # the build. The image is built on GitHub Actions runners (AVX-512) and run on other
 # hosts, where those instructions crash whisper-cli with SIGILL. Target a portable
@@ -46,7 +50,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # yt-dlp_linux (not the plain "yt-dlp" asset — that one's a Python zipapp that
 # shells out to a system `python3`, which this image doesn't have) is the
 # standalone PyInstaller build with its own bundled interpreter, no deps.
-RUN curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
+# YTDLP_CACHE_BUST: a changed value invalidates this layer, so CI passes a fresh
+# one per build — otherwise the cached layer keeps whatever yt-dlp was "latest"
+# the first time it was built, and YouTube breaks old yt-dlp within weeks.
+ARG YTDLP_CACHE_BUST=
+RUN echo "yt-dlp cache bust: ${YTDLP_CACHE_BUST}" \
+    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 

@@ -8,6 +8,23 @@ const assert = require('node:assert');
 const ytdlp = require('../src/ytdlp');
 const cfg = require('../src/config');
 
+test('isFormatUnavailable covers YouTube refusing a degraded client', () => {
+  assert.ok(ytdlp.isFormatUnavailable('ERROR: [youtube] lRylpj9JOeA: This video is not available'));
+  assert.ok(ytdlp.isFormatUnavailable('ERROR: [youtube] lRylpj9JOeA: The page needs to be reloaded.'));
+  assert.ok(!ytdlp.isFormatUnavailable("ERROR: Sign in to confirm you're not a bot"));
+});
+
+test('parseJsRuntimes reads the yt-dlp -v debug line', () => {
+  assert.strictEqual(ytdlp.parseJsRuntimes('[debug] Python 3.14\n'), null);
+  assert.deepStrictEqual(ytdlp.parseJsRuntimes('[debug] JS runtimes: none\n'), { raw: 'none', usable: [], unsupported: [] });
+  assert.deepStrictEqual(ytdlp.parseJsRuntimes('[debug] JS runtimes: node-20.20.2 (unsupported)\r\n[debug] Proxy map: {}'), {
+    raw: 'node-20.20.2 (unsupported)',
+    usable: [],
+    unsupported: ['node-20.20.2 (unsupported)'],
+  });
+  assert.deepStrictEqual(ytdlp.parseJsRuntimes('[debug] JS runtimes: node-22.23.5\n').usable, ['node-22.23.5']);
+});
+
 test('tailStderr leaves short output alone', () => {
   assert.strictEqual(ytdlp.tailStderr('one\ntwo'), 'one\ntwo');
   assert.strictEqual(ytdlp.tailStderr(''), '');

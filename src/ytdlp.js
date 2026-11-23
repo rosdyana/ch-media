@@ -79,9 +79,15 @@ function isRateLimited(message) {
  * yt-dlp couldn't resolve a playable format — typically YouTube served a
  * degraded/empty format list to this client (SABR-only, bot-flagged datacenter
  * IP, missing JS runtime). Retrying under a different player_client often works.
+ *
+ * "This video is not available" (playability UNPLAYABLE) and "The page needs to
+ * be reloaded" (only SABR formats) are how YouTube answers a degraded client for
+ * a video that plays fine in a browser, so they count too.
  */
 function isFormatUnavailable(message) {
-  return /Requested format is not available|No video formats found|Only images are available/i.test(message || '');
+  return /Requested format is not available|No video formats found|Only images are available|This video is not available|The page needs to be reloaded/i.test(
+    message || '',
+  );
 }
 
 /**
@@ -185,6 +191,69 @@ function getCapabilities() {
 }
 
 /**
+ * Parse the `[debug] JS runtimes: ...` line from `yt-dlp -v` output, e.g.
+ * "none", "node-22.23.5" or "node-20.20.2 (unsupported)". Returns null when the
+ * line is absent (older yt-dlp, or output we don't recognise).
+ */
+function parseJsRuntimes(output) {
+  const m = /\[debug\] JS runtimes:[ \t]*([^\r\n]*)/.exec(output || '');
+  if (!m) return null;
+  const raw = m[1].trim();
+  const entries = raw && raw !== 'none' ? raw.split(/,\s*/) : [];
+  return {
+    raw,
+    usable: entries.filter((e) => !/\(unsupported\)/i.test(e)),
+    unsupported: entries.filter((e) => /\(unsupported\)/i.test(e)),
+  };
+}
+
+/**
+ * Startup check: is the JS runtime we hand yt-dlp actually accepted? Without
+ * one, YouTube's player challenge goes unsolved and yt-dlp quietly falls back to
+ * clients YouTube refuses ("This video is not available"), so every video
+ * fails while looking like a per-video problem. yt-dlp also rejects runtimes
+ * that are too old (Node 20 since 2026.10) without failing, so this is the only
+ * place it shows up. Logs only; never throws.
+ */
+async function checkJsRuntime() {
+  try {
+    if (!cfg.JS_RUNTIMES) {
+      console.warn('[media] YTDLP_JS_RUNTIMES is empty — YouTube JS challenges will not be solved.');
+      return null;
+    }
+    const caps = await getCapabilities();
+    if (!caps.jsRuntimes) {
+      console.warn('[media] this yt-dlp is too old for --js-runtimes; update yt-dlp.');
+      return null;
+    }
+    // No URL on purpose: yt-dlp prints its debug header, then exits non-zero
+    // asking for a URL. The header is all we need, and it makes no network call.
+    let output;
+    try {
+      const r = await execRaw(cfg.YTDLP_PATH, ['-v', '--js-runtimes', cfg.JS_RUNTIMES], 30_000);
+      output = `${r.stdout}\n${r.stderr}`;
+    } catch (err) {
+      output = `${err.stdout || ''}\n${err.stderr || ''}`;
+    }
+    const result = parseJsRuntimes(output);
+    if (!result) return null;
+    if (result.usable.length) {
+      console.log(`[media] yt-dlp JS runtime: ${result.usable.join(', ')}`);
+    } else {
+      console.error(
+        `[media] yt-dlp has NO usable JS runtime (${result.raw}) for YTDLP_JS_RUNTIMES="${cfg.JS_RUNTIMES}". ` +
+          'YouTube videos will fail with "This video is not available". Upgrade Node (22+) or point ' +
+          'YTDLP_JS_RUNTIMES at a supported runtime — see README troubleshooting.',
+      );
+    }
+    return result;
+  } catch (err) {
+    console.warn(`[media] could not check yt-dlp JS runtime: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Flags shared by every yt-dlp call. `playerClient` overrides cfg.PLAYER_CLIENT
  * so callers can retry the same request under a different YouTube client when
  * the default one stops returning usable formats (see PLAYER_CLIENT_FALLBACKS).
@@ -279,6 +348,8 @@ module.exports = {
   execRaw,
   commonArgs,
   getCapabilities,
+  parseJsRuntimes,
+  checkJsRuntime,
   isRateLimited,
   isFormatUnavailable,
   classifyYtDlpError,

@@ -175,7 +175,7 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
 
 ## Requirements (host / image)
 
-- Node ≥ 20
+- Node ≥ 22 (also yt-dlp's JS runtime — yt-dlp rejects Node 20 as "unsupported")
 - Redis ≥ 6 reachable at `REDIS_URL` — the job queue's broker + result store
 - `yt-dlp` on `PATH` (or `YTDLP_PATH`)
 - `ffmpeg` on `PATH` (or `FFMPEG_PATH`) — needed for audio extraction + resample
@@ -194,12 +194,22 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
   (non-SABR) formats shifts over time. If it still fails everywhere, the host itself is the
   problem: **update yt-dlp first** (`yt-dlp -U`, or re-run `scripts/install-deps.sh`) — a stale
   binary is the single most common cause — then check the JS-runtime and cookie notes below.
+  `This video is not available` and `The page needs to be reloaded` get the same client retries.
+  In Docker, `yt-dlp -U` inside a container is lost on restart; the image is rebuilt every Monday
+  by `docker-publish.yml`, which always downloads a fresh yt-dlp, so `docker compose pull` it.
 - yt-dlp needs a JavaScript runtime to solve YouTube's player challenge; without one it warns
   `some formats may be missing` and falls back to a degraded client. Node is already required by
   this service, so `YTDLP_JS_RUNTIMES` defaults to `node` and is passed automatically **when the
   installed yt-dlp is new enough to understand the flag** (it's probed once via `yt-dlp --help`,
   so an older binary silently keeps the old behaviour instead of erroring on every call). If node
   isn't on the service's `PATH` (common under systemd), set `YTDLP_JS_RUNTIMES=node:/usr/bin/node`.
+  **yt-dlp also refuses a runtime it considers too old, without failing**: since 2026.10 it logs
+  `JS runtimes: node-20.x (unsupported)` and carries on with none, and YouTube then answers its
+  fallback clients with `This video is not available` / `The page needs to be reloaded`, even for
+  videos that play fine in an incognito browser. That is why the image uses Node 22. On startup
+  the api and worker run `yt-dlp -v` once and log `yt-dlp JS runtime: node-22…` when it's fine,
+  or an error starting `yt-dlp has NO usable JS runtime` when it isn't. Check for that line
+  before debugging individual videos.
   Only if your yt-dlp build ships without the bundled EJS scripts do you also need
   `YTDLP_REMOTE_COMPONENTS=ejs:github` — that makes yt-dlp fetch and execute JavaScript from
   GitHub, so it stays opt-in and empty by default.
@@ -272,7 +282,7 @@ front of it on a custom domain.
 > [Deployment (Docker on Debian, behind Caddy)](#deployment-docker-on-debian-behind-caddy)
 > below for a containerized version of the same setup.
 
-### 1. System packages, Node 20 + the media binaries
+### 1. System packages, Node 22 + the media binaries
 
 `scripts/install-deps.sh` installs Node.js (NodeSource), `yt-dlp` (standalone binary),
 `ffmpeg`, and — with `--with-asr` — builds `whisper.cpp` and downloads a ggml model.
@@ -298,10 +308,10 @@ Run `./scripts/install-deps.sh --help` for all flags, or do it by hand:
 sudo apt update
 sudo apt install -y curl git build-essential ca-certificates python3
 
-# Node 20.x via NodeSource
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+# Node 22.x via NodeSource
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v   # v20.x
+node -v   # v22.x
 
 # yt-dlp (Debian's apt package is usually too old — use the standalone binary)
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp

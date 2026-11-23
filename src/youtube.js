@@ -339,8 +339,13 @@ async function transcribeYoutube(url) {
   // evidence of anything.
   const tracks = listCaptionTracks(meta);
   const track = pickCaptionLanguage(meta, cfg.SUB_LANGS);
+  // An explicitly empty format list means YouTube refused this client
+  // (--ignore-no-formats-error turned "This video is not available" into a
+  // silent success), and such a response carries no caption maps either — so
+  // "no track" is not evidence of anything, same as a 429.
+  const metaUnplayable = Array.isArray(meta.formats) && meta.formats.length === 0;
   const captionEvidence =
-    metaError || metaRateLimited || !cfg.TRUST_CAPTION_METADATA ? 'unknown' : track ? 'yes' : 'no';
+    metaError || metaRateLimited || metaUnplayable || !cfg.TRUST_CAPTION_METADATA ? 'unknown' : track ? 'yes' : 'no';
 
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'mi-media-'));
   let transcript = '';
@@ -474,6 +479,7 @@ async function transcribeYoutube(url) {
         : stages.map(([label, msg]) => `${label}: ${msg}`);
 
     if (captionSkipped) reasons.unshift('captions skipped (no usable caption track in metadata)');
+    if (metaUnplayable) reasons.unshift('YouTube returned no playable formats to this host');
     if (asrSkipReason) reasons.push(`ASR skipped: ${asrSkipReason}`);
     else if (!asrError && asrAttempted) reasons.push('ASR produced no text');
     else if (!asrError && !cfg.ASR_ENABLED) reasons.push('ASR disabled');

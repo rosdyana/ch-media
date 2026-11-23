@@ -16,14 +16,17 @@ on:
       - src/**
       - scripts/**
       - .github/workflows/docker-publish.yml
+  # Weekly rebuild so the image picks up the newest yt-dlp even when nothing in
+  # this repo changed — YouTube breaks old yt-dlp releases within weeks.
+  schedule:
+    - cron: '0 2 * * 1'
   workflow_dispatch:
     inputs:
       no_cache:
         description: >-
-          Bypass the build cache. whisper.cpp and yt-dlp are otherwise cached
-          layers (see README#requirements), so this is the only way to force
-          a fresh whisper.cpp checkout or pick up a newer yt-dlp release
-          without waiting for an unrelated Dockerfile/src change.
+          Bypass the build cache. whisper.cpp is otherwise a cached layer, so
+          this is the only way to force a fresh whisper.cpp checkout. (yt-dlp
+          is re-downloaded on every build via YTDLP_CACHE_BUST.)
         type: boolean
         default: false
 
@@ -69,6 +72,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Re-download yt-dlp on every build; whisper.cpp stays cached.
+          build-args: |
+            YTDLP_CACHE_BUST=${{ github.run_id }}
           # Skip attestation manifests: they add nothing for a private
           # single-arch deploy pulled by an older docker-ce, and are one less
           # thing that could make `docker compose pull` behave unexpectedly.

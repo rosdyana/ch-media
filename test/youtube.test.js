@@ -486,6 +486,42 @@ test('transcribeYoutube: audio download retries under a fallback player client o
   assert.match(result.text, /asr after client retry/);
 });
 
+test('transcribeYoutube: unplayable metadata (empty formats) does not count as "no captions"', async (t) => {
+  withAsr(t);
+
+  let captionCalls = 0;
+  const clientsTried = [];
+  t.mock.method(ytdlp, 'runYtDlp', async (args) => {
+    if (args.includes('--dump-single-json')) {
+      // What --ignore-no-formats-error yields when YouTube refuses the client.
+      return {
+        stdout: JSON.stringify({ title: 'Refused', id: 'abc', duration: 60, formats: [], subtitles: {}, automatic_captions: {} }),
+      };
+    }
+    if (args.includes('--write-subs')) {
+      captionCalls += 1;
+      return { stdout: '' };
+    }
+    if (args.includes('-x')) {
+      const i = args.indexOf('--extractor-args');
+      clientsTried.push(i >= 0 ? args[i + 1] : 'default');
+      throw new ytdlp.MediaError('yt-dlp failed: ERROR: [youtube] abc: This video is not available');
+    }
+    throw new Error(`unexpected runYtDlp args: ${JSON.stringify(args)}`);
+  });
+
+  await assert.rejects(
+    () => transcribeYoutube('https://www.youtube.com/watch?v=abc'),
+    (err) => {
+      assert.match(err.message, /YouTube returned no playable formats/);
+      assert.doesNotMatch(err.message, /captions skipped/);
+      return true;
+    },
+  );
+  assert.strictEqual(captionCalls, 1, 'an empty caption map from a refused client is not evidence');
+  assert.ok(clientsTried.length > 1, '"This video is not available" should try the fallback clients');
+});
+
 test('transcribeYoutube: a non-format error does not burn retries on other clients', async (t) => {
   withAsr(t);
 

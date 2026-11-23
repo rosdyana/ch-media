@@ -9,7 +9,7 @@ const fsp = require('fs/promises');
 const { Worker } = require('bullmq');
 const cfg = require('./config');
 const { getConnection, QUEUE_NAME, JOB_NAMES } = require('./queue');
-const { MediaError } = require('./ytdlp');
+const { MediaError, checkJsRuntime } = require('./ytdlp');
 const { transcribeYoutube, youtubeVideoId } = require('./youtube');
 const { transcribeUploadedAudio } = require('./audio');
 const { setCachedTranscript } = require('./cache');
@@ -68,6 +68,8 @@ worker.on('error', (err) => {
 });
 
 if (require.main === module) {
+  checkJsRuntime();
+
   const shutdown = (signal) => {
     console.log(`[media-worker] ${signal} received, shutting down`);
     worker.close().finally(() => process.exit(0));
