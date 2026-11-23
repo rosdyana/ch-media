@@ -206,8 +206,8 @@ A ready-to-import Postman collection + local environment live in [`postman/`](po
   **yt-dlp also refuses a runtime it considers too old, without failing**: since 2026.10 it logs
   `JS runtimes: node-20.x (unsupported)` and carries on with none, and YouTube then answers its
   fallback clients with `This video is not available` / `The page needs to be reloaded`, even for
-  videos that play fine in an incognito browser. That is why the image uses Node 22. On startup
-  the api and worker run `yt-dlp -v` once and log `yt-dlp JS runtime: node-22…` when it's fine,
+  videos that play fine in an incognito browser. That is why the image uses Node 24 (22+ works). On startup
+  the api and worker run `yt-dlp -v` once and log `yt-dlp JS runtime: node-24…` when it's fine,
   or an error starting `yt-dlp has NO usable JS runtime` when it isn't. Check for that line
   before debugging individual videos.
   Only if your yt-dlp build ships without the bundled EJS scripts do you also need
@@ -282,7 +282,7 @@ front of it on a custom domain.
 > [Deployment (Docker on Debian, behind Caddy)](#deployment-docker-on-debian-behind-caddy)
 > below for a containerized version of the same setup.
 
-### 1. System packages, Node 22 + the media binaries
+### 1. System packages, Node 24 + the media binaries
 
 `scripts/install-deps.sh` installs Node.js (NodeSource), `yt-dlp` (standalone binary),
 `ffmpeg`, and — with `--with-asr` — builds `whisper.cpp` and downloads a ggml model.
@@ -308,10 +308,10 @@ Run `./scripts/install-deps.sh --help` for all flags, or do it by hand:
 sudo apt update
 sudo apt install -y curl git build-essential ca-certificates python3
 
-# Node 22.x via NodeSource
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+# Node 24.x via NodeSource
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt install -y nodejs
-node -v   # v22.x
+node -v   # v24.x
 
 # yt-dlp (Debian's apt package is usually too old — use the standalone binary)
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp

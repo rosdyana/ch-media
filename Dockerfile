@@ -6,8 +6,9 @@ ARG WHISPER_MODEL=large-v3-turbo
 # Node is also yt-dlp's JS runtime for YouTube's player challenge (we pass
 # --js-runtimes node). yt-dlp 2026.10 reports Node 20 as "unsupported" and
 # silently runs without it, so every video fell back to degraded clients that
-# YouTube answers with "This video is not available". Node 22 is verified.
-ARG NODE_IMAGE=node:22-bookworm-slim
+# YouTube answers with "This video is not available". Node 22+ works; 24 is the
+# LTS line (to Apr 2028). Floating major tag + the weekly CI rebuild = patched.
+ARG NODE_IMAGE=node:24-bookworm-slim
 # whisper.cpp defaults to GGML_NATIVE=ON, i.e. -march=native for whatever CPU runs
 # the build. The image is built on GitHub Actions runners (AVX-512) and run on other
 # hosts, where those instructions crash whisper-cli with SIGILL. Target a portable

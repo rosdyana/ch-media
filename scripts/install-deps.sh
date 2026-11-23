@@ -18,7 +18,7 @@
 set -euo pipefail
 
 # ── Defaults ───────────────────────────────────────────────────────────────
-NODE_MAJOR=22
+NODE_MAJOR=24
 WITH_ASR=0
 WHISPER_MODEL=large-v3-turbo
 WHISPER_DIR=/opt/whisper.cpp
